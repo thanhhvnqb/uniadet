@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uniadet-reimplementation"
+version = "0.1.0"
+description = "Language-free universal visual anomaly detection based on AdaptCLIP"
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+
+[project.scripts]
+uniadet = "uniadet.cli:main"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = ["uniadet*", "lib*"]
+
+[tool.setuptools.package-data]
+lib = ["*.gz"]
