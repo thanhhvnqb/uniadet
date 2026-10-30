@@ -16,7 +16,7 @@ RUNS_ROOT = "runs"
 TRAIN_DATASET = None  # None uses the training data directory name
 
 TRAIN_CONFIG = {
-    "data": "datasets/VisA", "backbone": "clip",
+    "data": "datasets/VisA", "backbone": "clip",  # clip, eva02_clip, dinov2, dinov3
     "weights": None, "dino_repo": None, "layers": [12, 15, 18, 21, 24],
     "image_size": None, "temperature": 0.07, "lambda_f": 0.5, "lambda_p": 0.5,
     "epochs": 20, "lr": 0.001, "betas": [0.5, 0.999], "weight_decay": 0.0,

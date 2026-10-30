@@ -13,6 +13,7 @@ lib/loss.py
 lib/model_load.py
 lib/simple_tokenizer.py
 lib/transform.py
+tests/test_training_workflow.py
 tests/test_uniadet.py
 uniadet/__init__.py
 uniadet/backbones.py

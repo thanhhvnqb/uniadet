@@ -12,7 +12,53 @@ import torch.nn.functional as F
 from uniadet.model import DecoupledHead, NormalMemory, UniADet
 from uniadet.loss import training_loss
 from uniadet.data import AnomalyDataset, normal_references
-from uniadet.backbones import CLIPEncoder, DINOEncoder
+from uniadet.backbones import CLIPEncoder, DINOEncoder, EVA02CLIPEncoder, create_encoder
+
+
+def test_eva02_clip_tokens_and_dynamic_resolution():
+    from timm.models.eva import Eva
+    tower = Eva(img_size=28, patch_size=14, embed_dim=32, depth=3, num_heads=4,
+                num_classes=8, global_pool="token", dynamic_img_size=True,
+                use_rot_pos_emb=True, ref_feat_shape=(2, 2)).eval()
+    encoder = EVA02CLIPEncoder(tower, [1, 3]).requires_grad_(False).eval()
+    assert encoder.dims == [8, 8]
+    for height, width in ((28, 28), (42, 28)):
+        images = torch.randn(2, 3, height, width, requires_grad=True)
+        features = encoder(images)
+        for cls, patches, grid in features:
+            assert grid == (height // 14, width // 14)
+            assert cls.shape == (2, 8)
+            assert patches.shape == (2, grid[0] * grid[1], 8)
+            assert not patches.requires_grad
+            assert torch.isfinite(patches).all()
+        torch.testing.assert_close(features[-1][0], tower(images))
+    with pytest.raises(ValueError, match="divisible"):
+        encoder(torch.randn(1, 3, 29, 28))
+    for layers in ([], [0], [2, 1], [1, 1], [4]):
+        with pytest.raises(ValueError, match="layers"):
+            EVA02CLIPEncoder(tower, layers)
+
+
+@pytest.mark.parametrize("weights", [None, "local_eva.pt"])
+def test_eva02_clip_factory(weights):
+    from timm.models.eva import Eva
+    tower = Eva(img_size=28, patch_size=14, embed_dim=32, depth=2, num_heads=4, num_classes=8)
+    with patch("timm.create_model", return_value=tower) as factory:
+        encoder = create_encoder("eva02_clip", [1, 2], weights=weights)
+    factory.assert_called_once_with("eva02_large_patch14_clip_336.merged2b",
+                                    pretrained=weights is None, checkpoint_path=weights or "",
+                                    dynamic_img_size=True)
+    assert not encoder.training
+    assert all(not parameter.requires_grad for parameter in encoder.parameters())
+
+
+def test_eva02_clip_cli_and_normalization(dataset_root):
+    from uniadet.cli import parser
+    args = parser().parse_args(["train", "--backbone", "eva02_clip"])
+    assert args.backbone == "eva02_clip"
+    clip = AnomalyDataset(dataset_root, image_size=28, backbone="clip")
+    eva = AnomalyDataset(dataset_root, image_size=28, backbone=args.backbone)
+    torch.testing.assert_close(eva[0]["image"], clip[0]["image"])
 
 
 class TinyEncoder(nn.Module):

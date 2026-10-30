@@ -27,7 +27,7 @@ def parser():
     p = argparse.ArgumentParser(description="UniADet training / zero- and few-shot evaluation")
     p.add_argument("mode", choices=("train", "evaluate"))
     p.add_argument("--data", type=str, default="dataset", help="Dataset root containing AdaptCLIP meta.json")
-    p.add_argument("--backbone", choices=("clip", "dinov2", "dinov3"), default="clip")
+    p.add_argument("--backbone", choices=("clip", "eva02_clip", "dinov2", "dinov3"), default="clip")
     p.add_argument("--weights", help="Pretrained backbone weights (required for DINOv3)")
     p.add_argument("--dino-repo", help="Optional local official DINOv3 checkout")
     p.add_argument("--layers", type=int, nargs="+", default=[12, 15, 18, 21, 24])
