@@ -1,4 +1,4 @@
-"""Frozen CLIP (AdaptCLIP weights/blocks) and official DINO hub encoders."""
+"""Frozen CLIP, EVA02-CLIP, and official DINO hub encoders."""
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -44,6 +44,35 @@ class CLIPEncoder(nn.Module):
         return features
 
 
+class EVA02CLIPEncoder(nn.Module):
+    """timm EVA vision tower, with CLIP projection on every selected layer."""
+
+    def __init__(self, model, layers):
+        super().__init__()
+        self.model, self.layers = model, tuple(layers)
+        if not layers or sorted(set(layers)) != list(layers) or layers[0] < 1 or layers[-1] > len(model.blocks):
+            raise ValueError("layers must be unique, ascending, one-based block indices")
+        self.patch_size = model.patch_embed.patch_size[0]
+        self.dims = [model.num_classes] * len(layers)
+
+    @torch.no_grad()
+    def forward(self, images):
+        if any(s % self.patch_size for s in images.shape[-2:]):
+            raise ValueError("Image dimensions must be divisible by patch size")
+        outputs = self.model.forward_intermediates(
+            images, indices=[i - 1 for i in self.layers], return_prefix_tokens=True,
+            norm=True, stop_early=True, output_fmt="NLC", intermediates_only=True,
+        )
+        grid = tuple(s // self.patch_size for s in images.shape[-2:])
+        features = []
+        for patches, prefix in outputs:
+            # Apply the pretrained visual projection independently to all tokens.
+            tokens = self.model.head(self.model.head_drop(self.model.fc_norm(
+                torch.cat((prefix[:, :1], patches), dim=1))))
+            features.append((tokens[:, 0].float(), tokens[:, 1:].float(), grid))
+        return features
+
+
 class DINOEncoder(nn.Module):
     def __init__(self, model, layers, patch_size):
         super().__init__()
@@ -67,6 +96,13 @@ def create_encoder(name="clip", layers=(12, 15, 18, 21, 24), weights=None, dino_
         model, _ = load(weights or "ViT-L/14@336px", device="cpu")
         # Keep only vision tower; no text modules enter UniADet or the optimizer.
         return CLIPEncoder(model.visual, layers).requires_grad_(False).eval()
+    if name == "eva02_clip":
+        import timm
+        model = timm.create_model(
+            "eva02_large_patch14_clip_336.merged2b", pretrained=weights is None,
+            checkpoint_path=weights or "", dynamic_img_size=True,
+        )
+        return EVA02CLIPEncoder(model, layers).requires_grad_(False).eval()
     if name == "dinov2":
         model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitl14_reg", pretrained=weights is None)
         if weights:

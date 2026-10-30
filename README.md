@@ -28,7 +28,7 @@ pip install pytest
 python -m pytest -q
 ```
 
-CLIP and DINOv2 download pretrained weights on first use. DINOv3 requires separately obtained official weights and accepts a local official repository checkout via `--dino-repo`. Backbone code/weights retain their respective upstream licenses and access conditions.
+CLIP, EVA02-CLIP and DINOv2 download pretrained weights on first use. DINOv3 requires separately obtained official weights and accepts a local official repository checkout via `--dino-repo`. Backbone code/weights retain their respective upstream licenses and access conditions.
 
 If training reports that the NVIDIA driver is too old, check `python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`. An unavailable CUDA device makes the default training device CPU. On a driver supporting CUDA 12.6, install compatible wheels with `python -m pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126`, then restart training with `--device cuda` to require GPU execution.
 
@@ -66,6 +66,30 @@ python train.py --data datasets/visa --backbone dinov2 --output runs/visa_dinov2
 python train.py --data datasets/visa --backbone dinov3 --weights /weights/dinov3_vitl16.pth --dino-repo /repos/dinov3 --output runs/visa_dinov3
 ```
 
+For comparison with CLIP, select `--backbone eva02_clip`. This uses
+[`EVA02_CLIP_L_336_psz14_s6B`](https://github.com/baaivision/EVA/tree/master/EVA-CLIP)
+via the timm vision-only checkpoint
+[`eva02_large_patch14_clip_336.merged2b`](https://huggingface.co/timm/eva02_large_patch14_clip_336.merged2b).
+It uses the same five blocks (12, 15, 18, 21, 24), CLIP normalization, and
+768-dimensional projected class/patch tokens as the CLIP interface. EVA's
+rotary position embeddings are handled by timm. The default input remains 518
+for comparison at the same resolution; use `--image-size 336` for the pretrained
+resolution. Keep image size, data split, augmentation, seed and shots identical
+when comparing backbones, and use separate output directories.
+
+```bash
+python train.py --data datasets/VisA --backbone clip --output runs/visa_clip
+python train.py --data datasets/VisA --backbone eva02_clip --output runs/visa_eva02_clip
+python test.py --data datasets/MVTecAD --checkpoint runs/visa_eva02_clip/epoch_15.pt --shots 0 --output runs/mvtec_eva02_clip
+```
+
+EVA's `--weights` accepts a local **timm vision tower** state dictionary,
+including the pretrained 1024-to-768 projection (`head`); the original full
+EVA-CLIP checkpoint must first be converted to timm layout. Evaluation restores
+the backbone from the training checkpoint. In `train_test.py`, set
+`TRAIN_CONFIG["backbone"] = "eva02_clip"` and give `MODEL` a separate experiment
+name to keep its checkpoints and comparison CSV separate from CLIP runs.
+
 Evaluation restores `--weights` and `--dino-repo` from the checkpoint unless explicitly overridden; those paths must still be accessible. Optional local CLIP or DINOv2 weights can also be passed via `--weights`. CLIP weights must use AdaptCLIP’s CLIP checkpoint layout, DINOv2 weights a plain official model state dictionary.
 
 Few-shot references come exclusively from normal images in the **target train split**, sampled without replacement per category/view. No target-test fallback is used. `references.json` records the selected samples; `--seed` controls selection. Use distinct output directories for different shot counts and seeds. Checkpoints store the learned head, optimizer, epoch, and configuration; pretrained encoder weights are loaded separately. Evaluation restores the training backbone, layers, image size, and temperature from checkpoint configuration.
@@ -79,7 +103,7 @@ Few-shot references come exclusively from normal images in the **target train sp
 | Eqs. 11–12: map fusion then image score fusion | `UniADet.predict` |
 | Sec. 3.5: per-layer CE, focal, normal/anomaly Dice | `uniadet/loss.py` |
 | Appendix 6: class-aware grid mosaic and grid cropping | `uniadet/data.py` |
-| CLIP, DINOv2 with registers, DINOv3 frozen features | `uniadet/backbones.py` |
+| CLIP, EVA02-CLIP, DINOv2 with registers, DINOv3 frozen features | `uniadet/backbones.py` |
 
 Default blocks are **12, 15, 18, 21, 24** (one-based). Images resize to 518 for CLIP/DINOv2 and 512 for DINOv3. Only the head is optimized, for 15 epochs at learning rate 0.001. Both fusion coefficients default to 0.5. CAA runs with probability 0.5; grids 2×2 and 3×3 are equally likely. Normal mosaics contain only normal images of the same class; anomalous mosaics retain the candidate and sample any same-class images. Anomalous crops must intersect the mask.
 
