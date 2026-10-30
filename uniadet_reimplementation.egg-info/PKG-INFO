@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: uniadet-reimplementation
+Version: 0.1.0
+Summary: Language-free universal visual anomaly detection based on AdaptCLIP
+Requires-Python: >=3.10
+License-File: LICENSE
+Requires-Dist: torch>=2.2
+Requires-Dist: torchvision>=0.17
+Requires-Dist: numpy>=1.26
+Requires-Dist: pillow>=10
+Requires-Dist: scikit-learn>=1.4
+Requires-Dist: scipy>=1.11
+Requires-Dist: packaging
+Requires-Dist: setuptools<81
+Requires-Dist: ftfy
+Requires-Dist: regex
+Requires-Dist: tqdm
+Requires-Dist: einops
+Requires-Dist: huggingface-hub
+Requires-Dist: safetensors
+Requires-Dist: timm>=1.0.16
+Dynamic: license-file
