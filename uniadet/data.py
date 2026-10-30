@@ -11,13 +11,22 @@ from torchvision.transforms import functional as TF
 
 
 class AnomalyDataset(Dataset):
-    def __init__(self, root, split="test", image_size=518, backbone="clip", caa=False, records=None):
+    def __init__(self, root, split="test", image_size=518, backbone="clip", caa=False, records=None, training=False,
+                 caa_probability=0.5, caa_grids=(2, 3), mosaic_probability=0.5, rotation=True,
+                 horizontal_flip=True, vertical_flip=True):
         self.root = Path(root)
         metadata = json.loads((self.root / "meta.json").read_text())
         self.records = records if records is not None else [dict(item, cls_name=category) for category, items in metadata[split].items() for item in items]
         if not self.records:
             raise ValueError(f"No records in {root} split {split}")
         self.image_size, self.caa = image_size, caa
+        self.training = training
+        self.rotation = rotation
+        self.horizontal_flip = horizontal_flip
+        self.vertical_flip = vertical_flip
+        self.caa_probability = caa_probability
+        self.caa_grids = tuple(caa_grids)
+        self.mosaic_probability = mosaic_probability
         self.mean = (0.48145466, 0.4578275, 0.40821073) if backbone == "clip" else (0.485, 0.456, 0.406)
         self.std = (0.26862954, 0.26130258, 0.27577711) if backbone == "clip" else (0.229, 0.224, 0.225)
         self.groups = {}
@@ -45,8 +54,8 @@ class AnomalyDataset(Dataset):
 
     def augment(self, index, image, mask):
         item = self.records[index]
-        n = random.choice((2, 3))
-        if random.random() < 0.5:
+        n = random.choice(self.caa_grids)
+        if random.random() < self.mosaic_probability:
             # Preserve the candidate and sample the remaining tiles within its class.
             pool = self.groups[item["cls_name"]]
             if not item["anomaly"]:
@@ -74,13 +83,30 @@ class AnomalyDataset(Dataset):
         box = random.choice(boxes)
         return image.crop(box), mask.crop(box)
 
+    @staticmethod
+    def augment_geometry(image, mask, rotation=True, horizontal_flip=True, vertical_flip=True):
+        """Apply the same lossless random rotation and flips to image and target."""
+        if rotation:
+            angle = random.choice((0, 90, 180, 270))
+            image = image.rotate(angle, expand=True)
+            mask = mask.rotate(angle, expand=True)
+        if horizontal_flip and random.random() < 0.5:
+            image, mask = TF.hflip(image), TF.hflip(mask)
+        if vertical_flip and random.random() < 0.5:
+            image, mask = TF.vflip(image), TF.vflip(mask)
+        return image, mask
+
     def __getitem__(self, index):
         item = self.records[index]
         image, mask, valid = self.raw(index)
         if self.caa and not valid:
             raise ValueError("Training requires pixel masks for anomalous images")
-        if self.caa and random.random() < 0.5:
+        if self.caa and random.random() < self.caa_probability:
             image, mask = self.augment(index, image, mask)
+        if self.training:
+            image, mask = self.augment_geometry(image, mask, rotation=self.rotation,
+                                                horizontal_flip=self.horizontal_flip,
+                                                vertical_flip=self.vertical_flip)
         size = (self.image_size,)*2
         image = TF.normalize(TF.to_tensor(image.resize(size, Image.Resampling.BICUBIC)), self.mean, self.std)
         mask = torch.from_numpy((np.array(mask.resize(size, Image.Resampling.NEAREST)) > 0).astype("float32"))

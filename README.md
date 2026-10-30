@@ -6,6 +6,19 @@ Implementation of [One Language-Free Foundation Model Is Enough for Universal Vi
 
 Python 3.10+ (DINOv3 may require newer Python/PyTorch; follow its upstream environment requirements).
 
+With uv, PyTorch and torchvision use the CUDA 12.6 wheel index on Linux and Windows, so `uv sync` preserves compatibility with the training machine's driver. Other dependencies use PyPI. The default development group includes pytest.
+
+Keep `pyproject.toml`, `requirements.txt`, `uv.lock`, and `.python-version` together in version control. The lockfile records exact dependency versions; `.python-version` selects Python 3.11.15 to match the validated training environment. Use `uv sync --locked` to reject an outdated lockfile instead of changing it. Packages installed manually outside the project dependencies may be removed by sync.
+
+```bash
+uv sync
+uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+uv run python -m pytest -q
+uv run python train.py --data datasets/VisA --backbone clip --device cuda --output runs/visa
+```
+
+Alternatively, install with pip:
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -16,6 +29,8 @@ python -m pytest -q
 ```
 
 CLIP and DINOv2 download pretrained weights on first use. DINOv3 requires separately obtained official weights and accepts a local official repository checkout via `--dino-repo`. Backbone code/weights retain their respective upstream licenses and access conditions.
+
+If training reports that the NVIDIA driver is too old, check `python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`. An unavailable CUDA device makes the default training device CPU. On a driver supporting CUDA 12.6, install compatible wheels with `python -m pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126`, then restart training with `--device cuda` to require GPU execution.
 
 ## Data and training protocol
 
@@ -35,6 +50,12 @@ Use AdaptCLIP’s `meta.json` schema, with paths relative to each dataset root:
 Category names come from dictionary keys. `view_id` is optional, defaults to `"0"`, and separates multi-view reference banks. Dataset generators from AdaptCLIP are retained in `dataset/`; edit their root paths before running them. Images use PIL-supported formats. Nonzero mask values indicate anomaly. Missing anomalous masks are allowed for classification-only evaluation and excluded from pixel metrics; training requires masks.
 
 The paper trains on the **auxiliary dataset’s test split**, which contains both normal and annotated anomaly images. Train on VisA, evaluate on MVTec and other domains; train a separate model on MVTec when evaluating VisA. The default `--split test` is intentional. Zero-shot means no target-domain training, not no auxiliary supervision.
+
+Training applies a uniformly sampled rotation of 0°, 90°, 180°, or 270° and independent horizontal and vertical flips (50% probability each). Images and ground-truth masks receive identical transforms before resizing, preserving binary masks and image-level labels. These augmentations remain enabled with `--no-caa`; evaluation and reference images are not augmented.
+
+Rotation is enabled by default. Use `python train.py --no-rotation` to disable it or `--rotation` to enable it explicitly. In `train_test.py`, set `TRAIN_CONFIG["rotation"]` to `False` or `True`. Horizontal and vertical flips remain enabled independently of this setting.
+
+Flips can also be controlled independently with `--horizontal-flip` / `--no-horizontal-flip` and `--vertical-flip` / `--no-vertical-flip`. Both default to enabled, each with a 50% chance per image. In `train_test.py`, set `TRAIN_CONFIG["horizontal_flip"]` and `TRAIN_CONFIG["vertical_flip"]` to `False` or `True`. To disable all geometric augmentation, pass `--no-rotation --no-horizontal-flip --no-vertical-flip`.
 
 ```bash
 python train.py --data datasets/visa --backbone clip --output runs/visa
@@ -112,3 +133,37 @@ are under `runs/paper_clip`; dataset counts and comparison caveats are in
 `runs/preparation/datasets.json` and `runs/preparation/notes.md`.
 Real-IAD is absent; the supplied KSDD split differs from the paper. This run covers
 CLIP with one seed; DINO backbones and multi-seed error bars are not included.
+
+## Dev training and checkpoint testing
+
+`train.py` and `test.py` retain their original CLI parameters and output paths.
+Training additionally saves `training_config.json`, `training.csv`, and
+`training.jsonl` with step/epoch loss components, learning rate, sample counts,
+and elapsed epoch seconds. Epoch losses are sample-weighted averages. Logs
+append when reusing an output directory; matching checkpoints are overwritten.
+
+For development, edit `MODEL`, `TRAIN_CONFIG`, and `TEST_CONFIG` at the top of
+`train_test.py`, then run:
+
+```bash
+python train_test.py                         # train, then test saved checkpoints
+python train_test.py --mode train            # train only
+python train_test.py --mode test --start-epoch 5
+python train_test.py --mode train_test --start-epoch 5
+```
+
+Training always starts and saves checkpoints from epoch 1. `start_epoch` only
+selects checkpoints for testing, inclusive. The combined mode completes training
+before testing. `MODEL` labels experiments (e.g. `uniadet`, `uniadetv1`) using the
+current UniADet architecture. The dev runner saves checkpoints under
+`runs/<MODEL>/train_<dataset>/epoch_<N>.pt` and results under
+`runs/<MODEL>/<target>_<shots>sh/epoch_<N>/`. The default root is `runs` for both.
+`TEST_CONFIG["checkpoint"]` can select another checkpoint directory or a single
+checkpoint file; a single file is evaluated directly without epoch filtering.
+
+After the dev runner finishes testing all selected epochs, it writes
+`runs/<MODEL>/test_summary.csv`. Each row contains dataset, shot count, epoch,
+checkpoint path, and the seven `average` metrics (percentages, matching
+`metrics.csv`; undefined metrics are blank). The file compares all datasets,
+shot counts, and epochs tested in that invocation and is replaced on the next
+successful test run.

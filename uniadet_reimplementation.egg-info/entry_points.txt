@@ -1,0 +1,2 @@
+[console_scripts]
+uniadet = uniadet.cli:main

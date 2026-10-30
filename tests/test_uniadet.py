@@ -143,6 +143,84 @@ def test_class_aware_augmentation_preserves_labels(dataset_root, mosaic):
     assert item["mask"].shape == (18, 18)
 
 
+@pytest.mark.parametrize("angle", [0, 90, 180, 270])
+@pytest.mark.parametrize("horizontal,vertical", [(False, False), (True, False), (False, True), (True, True)])
+def test_geometry_keeps_image_and_groundtruth_aligned(angle, horizontal, vertical):
+    pixels = np.zeros((5, 9), dtype=np.uint8)
+    pixels[1:3, 2:5] = 255
+    image = Image.fromarray(np.repeat(pixels[..., None], 3, axis=2))
+    mask = Image.fromarray(pixels)
+    expected = np.rot90(pixels, angle // 90)
+    if horizontal:
+        expected = np.fliplr(expected)
+    if vertical:
+        expected = np.flipud(expected)
+    with patch("uniadet.data.random.choice", return_value=angle), patch(
+        "uniadet.data.random.random", side_effect=[0.1 if horizontal else 0.9, 0.1 if vertical else 0.9]
+    ):
+        image, mask = AnomalyDataset.augment_geometry(image, mask)
+    np.testing.assert_array_equal(np.array(mask), expected)
+    np.testing.assert_array_equal(np.array(image)[..., 0], expected)
+    assert np.count_nonzero(expected) == np.count_nonzero(pixels)
+
+
+@pytest.mark.parametrize("training", [False, True])
+@pytest.mark.parametrize("rotation", [False, True])
+def test_geometry_runs_only_during_training_without_caa(dataset_root, training, rotation):
+    dataset = AnomalyDataset(dataset_root, image_size=17, training=training, rotation=rotation)
+    with patch.object(dataset, "augment_geometry", wraps=dataset.augment_geometry) as geometry:
+        item = dataset[2]
+    assert geometry.call_count == int(training)
+    if training:
+        assert geometry.call_args.kwargs == {"rotation": rotation, "horizontal_flip": True, "vertical_flip": True}
+    assert item["label"] == 1
+    assert item["mask"].any()
+    assert set(item["mask"].unique().tolist()) == {0., 1.}
+
+
+@pytest.mark.parametrize("horizontal,vertical", [(False, False), (True, False), (False, True), (True, True)])
+def test_flip_toggles(dataset_root, horizontal, vertical):
+    dataset = AnomalyDataset(dataset_root, image_size=17, training=True, rotation=False,
+                             horizontal_flip=horizontal, vertical_flip=vertical)
+    with patch.object(dataset, "augment_geometry", wraps=dataset.augment_geometry) as geometry:
+        dataset[2]
+    assert geometry.call_args.kwargs == {
+        "rotation": False, "horizontal_flip": horizontal, "vertical_flip": vertical}
+    pixels = np.arange(45, dtype=np.uint8).reshape(5, 9)
+    image = Image.fromarray(np.repeat(pixels[..., None], 3, axis=2))
+    mask = Image.fromarray(pixels)
+    expected = pixels
+    if horizontal:
+        expected = np.fliplr(expected)
+    if vertical:
+        expected = np.flipud(expected)
+    with patch("uniadet.data.random.random", return_value=0.1) as draw:
+        image, mask = dataset.augment_geometry(image, mask, rotation=False,
+                                               horizontal_flip=horizontal, vertical_flip=vertical)
+    assert draw.call_count == int(horizontal) + int(vertical)
+    np.testing.assert_array_equal(np.array(mask), expected)
+    np.testing.assert_array_equal(np.array(image)[..., 0], expected)
+
+
+@pytest.mark.parametrize("horizontal,vertical", [(False, False), (True, False), (False, True), (True, True)])
+def test_rotation_disabled_preserves_flips(horizontal, vertical):
+    pixels = np.arange(45, dtype=np.uint8).reshape(5, 9)
+    image = Image.fromarray(np.repeat(pixels[..., None], 3, axis=2))
+    mask = Image.fromarray(pixels)
+    expected = pixels
+    if horizontal:
+        expected = np.fliplr(expected)
+    if vertical:
+        expected = np.flipud(expected)
+    with patch("uniadet.data.random.choice") as choice, patch(
+        "uniadet.data.random.random", side_effect=[0.1 if horizontal else 0.9, 0.1 if vertical else 0.9]
+    ):
+        image, mask = AnomalyDataset.augment_geometry(image, mask, rotation=False)
+    choice.assert_not_called()
+    np.testing.assert_array_equal(np.array(mask), expected)
+    np.testing.assert_array_equal(np.array(image)[..., 0], expected)
+
+
 def test_references_train_only_and_without_replacement(dataset_root):
     a = normal_references(dataset_root, 2, 10)
     assert a == normal_references(dataset_root, 2, 10)
@@ -188,6 +266,13 @@ def test_training_and_evaluation_cli(dataset_root, tmp_path):
     args = parser().parse_args(["train", "--data", str(dataset_root), "--output", str(output), "--image-size", "8", "--epochs", "1", "--workers", "0", "--device", "cpu"])
     with patch("uniadet.cli.build", side_effect=lambda _: UniADet(TinyEncoder())):
         train(args)
+        history = [json.loads(line) for line in (output / "training.jsonl").read_text().splitlines()]
+        assert history[-1]["kind"] == "epoch"
+        assert history[-1]["samples"] == 4
+        assert history[-1]["loss"] == pytest.approx(
+            history[-1]["classification"] + history[-1]["segmentation"], rel=1e-6)
+        assert (output / "training.csv").is_file()
+        assert json.loads((output / "training_config.json").read_text())["epochs"] == 1
         args.checkpoint = str(output/"epoch_1.pt")
         args.shots = 1
         evaluate(args)
@@ -243,6 +328,37 @@ def test_aupro_region_balance_and_edge_cases():
     assert aupro([np.ones_like(mask)], [scores]) is None
 
 
+@pytest.mark.parametrize("score_kind", ["continuous", "tied", "constant", "perfect", "reversed"])
+def test_shared_pixel_sort_matches_reference_metrics(score_kind):
+    from uniadet.cli import metrics, aupro, pixel_metrics
+    rng = np.random.default_rng(42)
+    masks = np.zeros((4, 13, 17), dtype=bool)
+    masks[1, 2:5, 3:7] = True
+    masks[1, 9, 12] = True
+    masks[2, 1:11, 2:15] = True
+    masks[3] = True
+    scores = rng.random(masks.shape).astype(np.float32)
+    if score_kind == "tied":
+        scores = np.round(scores, 1)
+    elif score_kind == "constant":
+        scores[:] = 0.5
+    elif score_kind == "perfect":
+        scores = masks.astype(np.float32)
+    elif score_kind == "reversed":
+        scores = (~masks).astype(np.float32)
+    expected = metrics(masks.ravel(), scores.ravel())
+    expected["aupro"] = aupro(masks, scores)
+    assert pixel_metrics(masks, scores) == pytest.approx(expected, abs=1e-12)
+
+
+@pytest.mark.parametrize("value", [False, True])
+def test_shared_pixel_sort_undefined(value):
+    from uniadet.cli import pixel_metrics
+    masks = np.full((2, 3, 4), value, dtype=bool)
+    assert pixel_metrics(masks, masks.astype(float)) == dict(
+        auroc=None, aupr=None, f1max=None, aupro=None)
+
+
 def test_paper_metric_exports(tmp_path):
     import csv
     from uniadet.cli import save_metrics
@@ -269,6 +385,13 @@ def test_paper_metric_exports(tmp_path):
 @pytest.mark.parametrize("shots", [0, 1])
 def test_batched_evaluation_matches_single_image(dataset_root, tmp_path, shots):
     from uniadet.cli import parser, evaluate
+    # Constant images create tied pixel scores whose ranking can change under
+    # harmless float32 batch-kernel rounding. Use spatially varied inputs to
+    # check ranking metrics, and compare the dense predictions directly below.
+    rng = np.random.default_rng(123)
+    for index in range(4):
+        pixels = rng.integers(0, 256, size=(11, 17, 3), dtype=np.uint8)
+        Image.fromarray(pixels).save(dataset_root / f"{index}.png")
     metadata = json.loads((dataset_root / "meta.json").read_text())
     for split in metadata.values():
         for index, row in enumerate(split["a"]):
@@ -276,19 +399,33 @@ def test_batched_evaluation_matches_single_image(dataset_root, tmp_path, shots):
     (dataset_root / "meta.json").write_text(json.dumps(metadata))
     args = parser().parse_args(["evaluate", "--data", str(dataset_root),
                                "--image-size", "8", "--workers", "0", "--device", "cpu"])
-    model = UniADet(TinyEncoder()).eval()
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(123)
+        model = UniADet(TinyEncoder()).eval()
     checkpoint = tmp_path / "checkpoint.pt"
     torch.save({"config": vars(args), "head": model.head.state_dict()}, checkpoint)
     args.checkpoint, args.shots = str(checkpoint), shots
-    reports, predictions = [], []
+    reports, predictions, dense_predictions = [], [], []
+    original_predict = model.predict
+
+    def capture_predictions(*args, **kwargs):
+        scores, maps = original_predict(*args, **kwargs)
+        dense_predictions[-1].extend(maps.cpu().clone().unbind())
+        return scores, maps
+
     for size in (1, 3):
         output = tmp_path / f"batch_{size}"
         output.mkdir()
         args.batch_size, args.output = size, str(output)
-        with patch("uniadet.cli.build", return_value=model):
+        dense_predictions.append([])
+        with patch("uniadet.cli.build", return_value=model), patch.object(
+            model, "predict", side_effect=capture_predictions
+        ):
             evaluate(args)
         reports.append(json.loads((output / "metrics.json").read_text()))
         predictions.append(json.loads((output / "predictions.json").read_text()))
+    torch.testing.assert_close(torch.stack(dense_predictions[0]),
+                               torch.stack(dense_predictions[1]), rtol=1e-5, atol=1e-6)
     for task in ("image", "pixel"):
         assert reports[0]["a"][task] == pytest.approx(reports[1]["a"][task], abs=1e-6)
     assert [row["path"] for row in predictions[0]] == [row["path"] for row in predictions[1]]
@@ -317,3 +454,19 @@ def test_evaluation_restores_encoder_source(dataset_root, tmp_path):
     with patch("uniadet.cli.build", return_value=model):
         evaluate(args)
     assert args.weights == "explicit_override.pt"
+
+
+
+def test_dev_runner_saves_from_epoch_one(dataset_root, tmp_path, monkeypatch):
+    import train_test as dev
+    monkeypatch.setattr(dev, "RUNS_ROOT", str(tmp_path / "runs"))
+    monkeypatch.setattr(dev, "MODEL", "uniadetv1")
+    monkeypatch.setattr(dev, "TRAIN_CONFIG", dict(
+        dev.TRAIN_CONFIG, data=str(dataset_root), image_size=8, epochs=2, workers=0, device="cpu"))
+    with patch("uniadet.cli.build", side_effect=lambda _: UniADet(TinyEncoder())), patch.object(
+        dev, "test_checkpoints") as test:
+        dev.main(["--mode", "train_test", "--start-epoch", "2"])
+    args, start_epoch = test.call_args.args
+    assert start_epoch == 2
+    assert (Path(args.output) / "epoch_1.pt").is_file()
+    assert (Path(args.output) / "epoch_2.pt").is_file()

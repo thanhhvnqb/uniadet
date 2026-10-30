@@ -47,6 +47,12 @@ def parser():
     p.add_argument("--zero-score-pooling", choices=("layer", "map"), default="layer",
                    help="Zero-shot spatial maximum per layer (Sec. 3.5), or legacy averaged map")
     p.add_argument("--no-caa", action="store_true")
+    p.add_argument("--rotation", action=argparse.BooleanOptionalAction, default=True,
+                   help="Enable random right-angle rotations during training (default: enabled)")
+    p.add_argument("--horizontal-flip", action=argparse.BooleanOptionalAction, default=True,
+                   help="Enable random horizontal flips during training (default: enabled)")
+    p.add_argument("--vertical-flip", action=argparse.BooleanOptionalAction, default=True,
+                   help="Enable random vertical flips during training (default: enabled)")
     p.add_argument("--split", default="test", help="Auxiliary training split; paper uses test")
     return p
 
@@ -57,29 +63,75 @@ def build(args):
 
 
 def train(args):
+    print(f"Training device: {args.device} (PyTorch {torch.__version__}, CUDA build {torch.version.cuda})", flush=True)
+    if torch.device(args.device).type == "cpu" and torch.version.cuda and not torch.cuda.is_available():
+        print("CUDA is unavailable; training will run on CPU. Check PyTorch CUDA and NVIDIA driver compatibility.", flush=True)
+    print(f"Loading {args.backbone} backbone...", flush=True)
+    args.image_size = args.image_size or (512 if args.backbone == "dinov3" else 518)
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "training_config.json").write_text(json.dumps(vars(args), indent=2))
     model = build(args).train()
-    dataset = AnomalyDataset(args.data, args.split, args.image_size, args.backbone, caa=not args.no_caa)
+    print(f"Loading training data from {args.data} (split={args.split})...", flush=True)
+    dataset = AnomalyDataset(args.data, args.split, args.image_size, args.backbone, caa=not args.no_caa, training=True,
+                             caa_probability=getattr(args, "caa_probability", 0.5),
+                             caa_grids=getattr(args, "caa_grids", (2, 3)),
+                             mosaic_probability=getattr(args, "mosaic_probability", 0.5),
+                             rotation=getattr(args, "rotation", True),
+                             horizontal_flip=getattr(args, "horizontal_flip", True),
+                             vertical_flip=getattr(args, "vertical_flip", True))
     # Explicitly reject incomplete supervision even when augmentation is disabled.
     for i, record in enumerate(dataset.records):
         if record["anomaly"] and not (dataset.root / record.get("mask_path", "")).is_file():
             raise ValueError(f"Missing training mask: {record['img_path']}")
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
-    optimizer = torch.optim.Adam(model.head.parameters(), lr=args.lr, betas=(0.5, 0.999))
-    print(f"Trainable parameters: {sum(p.numel() for p in model.head.parameters()):,}")
+    optimizer = torch.optim.Adam(model.head.parameters(), lr=args.lr, betas=tuple(getattr(args, "betas", (0.5, 0.999))),
+                                 weight_decay=getattr(args, "weight_decay", 0.0))
+    print(f"Trainable parameters: {sum(p.numel() for p in model.head.parameters()):,}", flush=True)
+    print(f"Training samples: {len(dataset):,}; batches per epoch: {len(loader):,}; workers: {args.workers}", flush=True)
+    def log_row(row):
+        with (output / "training.jsonl").open("a") as stream:
+            stream.write(json.dumps(row) + "\n")
+        csv_path = output / "training.csv"
+        new = not csv_path.exists() or csv_path.stat().st_size == 0
+        with csv_path.open("a", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(row))
+            if new:
+                writer.writeheader()
+            writer.writerow(row)
+
     for epoch in range(1, args.epochs+1):
-        total = 0.
+        totals = dict(loss=0., classification=0., segmentation=0.)
+        seen = 0
         started = time.monotonic()
+        print(f"epoch {epoch}/{args.epochs}: loading batches...", flush=True)
         for step, batch in enumerate(loader, 1):
+            if step == 1:
+                print(f"epoch {epoch}/{args.epochs}: first batch loaded in {time.monotonic()-started:.1f}s; running model...", flush=True)
             outputs = model(batch["image"].to(args.device))
-            loss = training_loss(outputs, batch["label"].to(args.device), batch["mask"].to(args.device))
+            components = training_loss(outputs, batch["label"].to(args.device), batch["mask"].to(args.device),
+                                       focal_gamma=getattr(args, "focal_gamma", 2.), dice_smooth=getattr(args, "dice_smooth", 1.),
+                                       classification_weight=getattr(args, "classification_weight", 1.),
+                                       segmentation_weight=getattr(args, "segmentation_weight", 1.), return_components=True)
+            loss = components["loss"]
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
-            total += loss.item() * len(batch["label"])
-            if step % 50 == 0 or step == len(loader):
+            count = len(batch["label"])
+            seen += count
+            values = {name: value.item() for name, value in components.items()}
+            for name, value in values.items():
+                totals[name] += value * count
+            if step == 1 or step % getattr(args, "log_interval", 50) == 0 or step == len(loader):
+                log_row(dict(kind="step", epoch=epoch, step=step, samples=seen, **values,
+                             lr=optimizer.param_groups[0]["lr"], seconds=time.monotonic()-started))
                 print(f"epoch {epoch}/{args.epochs} step {step}/{len(loader)} loss={loss.item():.6f} elapsed={time.monotonic()-started:.1f}s", flush=True)
-        print(f"epoch {epoch}/{args.epochs} loss={total/len(dataset):.6f}", flush=True)
+        averages = {name: value / seen for name, value in totals.items()}
+        log_row(dict(kind="epoch", epoch=epoch, step=len(loader), samples=seen, **averages,
+                     lr=optimizer.param_groups[0]["lr"], seconds=time.monotonic()-started))
+        print(f"epoch {epoch}/{args.epochs} " + " ".join(f"{k}={v:.6f}" for k, v in averages.items()), flush=True)
         torch.save({"head": model.head.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch, "config": vars(args)}, Path(args.output)/f"epoch_{epoch}.pt")
+
 
 
 def metrics(labels, scores):
@@ -153,6 +205,51 @@ def save_metrics(report, output):
             writer.writerow([category] + [100 * value if value is not None else "" for value in values])
 
 
+def pixel_metrics(masks, maps):
+    """Exact dense metrics sharing one score sort, including region-balanced PRO."""
+    from scipy.ndimage import label
+    from sklearn.metrics import auc
+
+    labels = np.concatenate([mask.ravel() for mask in masks]).astype(bool, copy=False)
+    positives = int(labels.sum())
+    if positives == 0 or positives == labels.size:
+        return dict(auroc=None, aupr=None, f1max=None, aupro=None)
+    scores = np.concatenate([amap.ravel() for amap in maps])
+    # Match sklearn's stable descending order and aggregate tied thresholds.
+    order = np.argsort(scores, kind="stable")[::-1]
+    scores = scores[order]
+    ends = np.r_[np.flatnonzero(np.diff(scores)), labels.size - 1]
+    del scores
+    ranked_labels = labels[order]
+    tp = np.cumsum(ranked_labels, dtype=np.float64)[ends]
+    fp = (ends + 1) - tp
+    recall = tp / positives
+    precision = tp / (ends + 1)
+    fpr = np.r_[0., fp / (labels.size - positives)]
+    result = {
+        "auroc": float(auc(fpr, np.r_[0., recall])),
+        "aupr": float(auc(np.r_[0., recall], np.r_[1., precision])),
+        "f1max": float(np.max(2 * tp / (ends + 1 + positives))),
+    }
+    del ranked_labels, tp, fp, recall, precision
+    weights = []
+    for mask in masks:
+        components, count = label(mask, structure=np.ones((3, 3)))
+        areas = np.bincount(components.ravel())
+        region_weights = np.zeros(count + 1, dtype=np.float64)
+        region_weights[1:] = 1. / areas[1:]
+        weights.append(region_weights[components].ravel())
+    weighted_tp = np.cumsum(np.concatenate(weights)[order], dtype=np.float64)[ends]
+    pro = np.r_[0., weighted_tp / weighted_tp[-1]]
+    stop = np.searchsorted(fpr, 0.3, side="right")
+    x, y = fpr[:stop], pro[:stop]
+    if x[-1] < 0.3:
+        boundary = np.interp(0.3, fpr[stop-1:stop+1], pro[stop-1:stop+1])
+        x, y = np.append(x, 0.3), np.append(y, boundary)
+    result["aupro"] = float(auc(x, y) / 0.3)
+    return result
+
+
 @torch.inference_mode()
 def evaluate(args):
     if not args.checkpoint:
@@ -186,7 +283,9 @@ def evaluate(args):
     report, predictions = {}, []
     # Evaluate one class at a time to bound dense metric storage on large datasets.
     for category in sorted(dataset.groups):
+        started = time.monotonic()
         rows = [dataset.records[i] for i in dataset.groups[category]]
+        print(f"Evaluating {category}: {len(rows)} images...", flush=True)
         subset = AnomalyDataset(args.data, image_size=args.image_size, backbone=args.backbone, records=rows)
         labels, scores, masks, maps = [], [], [], []
         # A few-shot batch must use one view's normal memory. Zero-shot
@@ -219,13 +318,15 @@ def evaluate(args):
             for index, path, value in zip(indices, batch["path"], batch_scores):
                 category_predictions[index] = {"path": path, "category": category, "score": value}
         predictions.extend(category_predictions[index] for index in range(len(rows)))
+        inference_seconds = time.monotonic() - started
+        metric_started = time.monotonic()
         pixel = None
         if masks:
-            pixel = metrics(np.concatenate([mask.ravel() for mask in masks]),
-                            np.concatenate([amap.ravel() for amap in maps]))
-            pixel["aupro"] = aupro(masks, maps)
+            pixel = pixel_metrics(masks, maps)
         report[category] = {"image": metrics(labels, scores), "pixel": pixel}
         print(category, json.dumps(report[category]), flush=True)
+        print(f"  loading/inference={inference_seconds:.1f}s; "
+              f"metrics={time.monotonic()-metric_started:.1f}s", flush=True)
     save_metrics(report, args.output)
     (Path(args.output)/"predictions.json").write_text(json.dumps(predictions, indent=2))
 
