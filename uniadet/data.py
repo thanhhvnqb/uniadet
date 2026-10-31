@@ -13,10 +13,22 @@ from torchvision.transforms import functional as TF
 class AnomalyDataset(Dataset):
     def __init__(self, root, split="test", image_size=518, backbone="clip", caa=False, records=None, training=False,
                  caa_probability=0.5, caa_grids=(2, 3), mosaic_probability=0.5, rotation=True,
-                 horizontal_flip=True, vertical_flip=True):
+                 horizontal_flip=True, vertical_flip=True, preserve_anomaly_mask=True,
+                 categories=None, exclude_categories=None, mask_interpolation="nearest"):
+        if mask_interpolation not in ("nearest", "bilinear"):
+            raise ValueError("mask_interpolation must be nearest or bilinear")
+        self.mask_interpolation = mask_interpolation
+        self.mask_resampling = Image.Resampling.NEAREST if mask_interpolation == "nearest" else Image.Resampling.BILINEAR
         self.root = Path(root)
         metadata = json.loads((self.root / "meta.json").read_text())
         self.records = records if records is not None else [dict(item, cls_name=category) for category, items in metadata[split].items() for item in items]
+        available = {item["cls_name"] for item in self.records}
+        requested = set(categories or ()) | set(exclude_categories or ())
+        if requested - available:
+            raise ValueError(f"Unknown categories: {sorted(requested - available)}")
+        self.records = [item for item in self.records
+                        if (categories is None or item["cls_name"] in categories)
+                        and item["cls_name"] not in (exclude_categories or ())]
         if not self.records:
             raise ValueError(f"No records in {root} split {split}")
         self.image_size, self.caa = image_size, caa
@@ -24,6 +36,7 @@ class AnomalyDataset(Dataset):
         self.rotation = rotation
         self.horizontal_flip = horizontal_flip
         self.vertical_flip = vertical_flip
+        self.preserve_anomaly_mask = preserve_anomaly_mask
         self.caa_probability = caa_probability
         self.caa_grids = tuple(caa_grids)
         self.mosaic_probability = mosaic_probability
@@ -49,7 +62,7 @@ class AnomalyDataset(Dataset):
                 with Image.open(path) as source:
                     mask = Image.fromarray((np.array(source.convert("L")) > 0).astype("uint8") * 255)
                 if mask.size != image.size:
-                    mask = mask.resize(image.size, Image.Resampling.NEAREST)
+                    mask = mask.resize(image.size, self.mask_resampling)
         return image, mask, has_mask
 
     def augment(self, index, image, mask):
@@ -71,7 +84,7 @@ class AnomalyDataset(Dataset):
                 box = (col*self.image_size//n, row*self.image_size//n, (col+1)*self.image_size//n, (row+1)*self.image_size//n)
                 size = (box[2]-box[0], box[3]-box[1])
                 canvas.paste(im.resize(size, Image.Resampling.BICUBIC), box)
-                target.paste(ma.resize(size, Image.Resampling.NEAREST), box)
+                target.paste(ma.resize(size, self.mask_resampling), box)
             return canvas, target
         w, h = image.size
         boxes = [(c*w//n, r*h//n, (c+1)*w//n, (r+1)*h//n) for r in range(n) for c in range(n)]
@@ -96,9 +109,14 @@ class AnomalyDataset(Dataset):
             image, mask = TF.vflip(image), TF.vflip(mask)
         return image, mask
 
+    def resize_mask(self, mask, size):
+        threshold = 0 if self.mask_interpolation == "nearest" else 127
+        return torch.from_numpy((np.array(mask.resize(size, self.mask_resampling)) > threshold).astype("float32"))
+
     def __getitem__(self, index):
         item = self.records[index]
         image, mask, valid = self.raw(index)
+        original_image, original_mask = image, mask
         if self.caa and not valid:
             raise ValueError("Training requires pixel masks for anomalous images")
         if self.caa and random.random() < self.caa_probability:
@@ -108,16 +126,35 @@ class AnomalyDataset(Dataset):
                                                 horizontal_flip=self.horizontal_flip,
                                                 vertical_flip=self.vertical_flip)
         size = (self.image_size,)*2
+        mask = self.resize_mask(mask, size)
+        if (self.preserve_anomaly_mask and (self.training or self.caa)
+                and item["anomaly"] and valid and not mask.any()):
+            # A small defect can disappear when mosaics shrink it to one tile.
+            # Fall back to the candidate, preserving its image-level label.
+            image, target = original_image, original_mask
+            if self.training:
+                image, target = self.augment_geometry(image, target, rotation=self.rotation,
+                                                      horizontal_flip=self.horizontal_flip,
+                                                      vertical_flip=self.vertical_flip)
+            mask = self.resize_mask(target, size)
+            if not mask.any() and self.mask_interpolation == "bilinear":
+                # Bilinear + threshold can erase even the original tiny defect.
+                # Preserve supervision with nearest resizing for this fallback.
+                mask = torch.from_numpy((np.array(target.resize(size, Image.Resampling.NEAREST)) > 0).astype("float32"))
+            if not mask.any():
+                raise ValueError(f"Anomaly mask is empty at image size {self.image_size}: {item['img_path']}; "
+                                 "check the source mask or increase --image-size")
         image = TF.normalize(TF.to_tensor(image.resize(size, Image.Resampling.BICUBIC)), self.mean, self.std)
-        mask = torch.from_numpy((np.array(mask.resize(size, Image.Resampling.NEAREST)) > 0).astype("float32"))
         return {"image": image, "mask": mask, "label": int(item["anomaly"]), "category": item["cls_name"], "view": str(item.get("view_id", "0")), "has_mask": valid, "path": item["img_path"]}
 
 
-def normal_references(root, shots, seed):
+def normal_references(root, shots, seed, categories=None):
     """Sample without replacement from train only, independently per class/view."""
     metadata = json.loads((Path(root)/"meta.json").read_text())
     groups = {}
     for category, records in metadata.get("train", {}).items():
+        if categories is not None and category not in categories:
+            continue
         for item in records:
             if not item["anomaly"]:
                 groups.setdefault((category, str(item.get("view_id", "0"))), []).append(dict(item, cls_name=category))

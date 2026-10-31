@@ -18,7 +18,7 @@ def test_legacy_defaults_are_unchanged():
 
 
 def test_rotation_can_be_toggled(monkeypatch):
-    assert parser().parse_args(["train"]).rotation is True
+    assert parser().parse_args(["train"]).rotation is False
     assert parser().parse_args(["train", "--rotation"]).rotation is True
     assert parser().parse_args(["train", "--no-rotation"]).rotation is False
     monkeypatch.setattr(dev, "TRAIN_CONFIG", dict(dev.TRAIN_CONFIG, rotation=False))
@@ -28,7 +28,7 @@ def test_rotation_can_be_toggled(monkeypatch):
 @pytest.mark.parametrize("name", ["horizontal_flip", "vertical_flip"])
 def test_flips_can_be_toggled(monkeypatch, name):
     flag = name.replace("_", "-")
-    assert getattr(parser().parse_args(["train"]), name) is True
+    assert getattr(parser().parse_args(["train"]), name) is False
     assert getattr(parser().parse_args(["train", f"--{flag}"]), name) is True
     assert getattr(parser().parse_args(["train", f"--no-{flag}"]), name) is False
     monkeypatch.setattr(dev, "TRAIN_CONFIG", dict(dev.TRAIN_CONFIG, **{name: False}))
@@ -88,3 +88,92 @@ def test_train_mode_without_start_epoch():
         dev.main(["--mode", "train"])
     train.assert_called_once()
     test.assert_not_called()
+
+
+@pytest.mark.parametrize("epochs,expected", [([15], [15]), ([2, 15], [2, 15]), (None, [1, 2, 15, 20])])
+def test_config_selects_checkpoint_epochs(tmp_path, monkeypatch, epochs, expected):
+    monkeypatch.setattr(dev, "RUNS_ROOT", str(tmp_path))
+    source = tmp_path / "checkpoints"
+    source.mkdir()
+    for epoch in (1, 2, 15, 20):
+        (source / f"epoch_{epoch}.pt").touch()
+    monkeypatch.setattr(dev, "TEST_CONFIG", dict(
+        data=["datasets/mvtec"], shots=[0], checkpoint=str(source), epochs=epochs))
+    seen = []
+    def evaluate(current):
+        seen.append(int(Path(current.checkpoint).stem[6:]))
+        output = Path(current.output)
+        output.mkdir(parents=True)
+        (output / "metrics.json").write_text(json.dumps({"average": {"image": {}, "pixel": {}}}))
+    with patch.object(dev.cli, "evaluate", side_effect=evaluate):
+        dev.test_checkpoints(dev.training_args(), 1)
+    assert seen == expected
+
+
+@pytest.mark.parametrize("epochs", [[], [0], [True], [1.5], "15", 15])
+def test_invalid_checkpoint_epoch_list(tmp_path, monkeypatch, epochs):
+    monkeypatch.setattr(dev, "TEST_CONFIG", dict(data=["target"], shots=[0], checkpoint=str(tmp_path), epochs=epochs))
+    with pytest.raises(ValueError, match="TEST_CONFIG.*epochs"):
+        dev.test_checkpoints(dev.training_args(), 1)
+
+
+def test_missing_selected_checkpoint_is_reported(tmp_path, monkeypatch):
+    (tmp_path / "epoch_10.pt").touch()
+    monkeypatch.setattr(dev, "TEST_CONFIG", dict(data=["target"], shots=[0], checkpoint=str(tmp_path), epochs=[15]))
+    with pytest.raises(ValueError, match="Missing requested checkpoint epochs.*15"):
+        dev.test_checkpoints(dev.training_args(), 1)
+
+
+def test_single_checkpoint_ignores_epoch_filters_and_uses_test_overrides(tmp_path, monkeypatch):
+    monkeypatch.setattr(dev, "RUNS_ROOT", str(tmp_path))
+    source = tmp_path / "epoch_3.pt"
+    source.touch()
+    monkeypatch.setattr(dev, "TEST_CONFIG", dict(
+        data=["target"], shots=[0], checkpoint=str(source), epochs=[15],
+        batch_size=4, workers=0, seed=123, device="cpu",
+        lambda_p=0.5, weights=None, dino_repo=None))
+    args = dev.training_args()
+    args.weights, args.dino_repo = "current_training.pt", "current_training_repo"
+    def evaluate(current):
+        assert current.checkpoint == str(source)
+        assert (current.batch_size, current.workers, current.seed, current.device) == (4, 0, 123, "cpu")
+        assert current.weights is None and current.dino_repo is None
+        assert current.lambda_p == 0.5
+        output = Path(current.output)
+        output.mkdir(parents=True)
+        (output / "metrics.json").write_text(json.dumps({"average": {"image": {}, "pixel": {}}}))
+        (output / "evaluation_config.json").write_text(json.dumps({"checkpoint_epoch": 3}))
+    with patch.object(dev.cli, "evaluate", side_effect=evaluate), patch.object(dev.cli, "seed_all") as seed:
+        dev.test_checkpoints(args, 15)
+    seed.assert_called_once_with(123)
+    with (tmp_path / dev.MODEL / "test_summary.csv").open() as stream:
+        assert list(csv.DictReader(stream))[0]["Epoch"] == "3"
+
+
+def test_selected_defaults_and_legacy_checkpoint_fallback():
+    from uniadet import cli
+    args = cli.parser().parse_args(["train"])
+    cli.resolve_training_settings(args)
+    assert args.softmax_before_resize is True
+    assert args.gaussian_sigma == 4. and args.zero_score_pooling == "layer"
+    assert not args.rotation and not args.horizontal_flip and not args.vertical_flip
+    runner = dev.training_args()
+    assert runner.softmax_before_resize is True and runner.gaussian_sigma == 4.
+    assert dev.TEST_CONFIG["epochs"] == [15]
+    old = cli.parser().parse_args(["evaluate"])
+    cli.restore_evaluation_settings(old, {"config": {"backbone": "clip"}})
+    assert old.softmax_before_resize is False and old.gaussian_sigma == 0.
+
+
+def test_cli_entrypoints_use_selected_defaults_and_dataset_paths():
+    from uniadet import cli
+    with patch.object(cli, "train") as train:
+        cli.main(["train"])
+    args = train.call_args.args[0]
+    cli.resolve_training_settings(args)
+    assert args.data == "datasets/VisA"
+    assert args.softmax_before_resize and args.gaussian_sigma == 4.
+    with patch.object(cli, "evaluate") as evaluate:
+        cli.main(["evaluate", "--checkpoint", "saved.pt"])
+    assert evaluate.call_args.args[0].data == "datasets/MVTecAD"
+    assert evaluate.call_args.args[0].gaussian_sigma is None

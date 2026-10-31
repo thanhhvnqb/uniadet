@@ -1,8 +1,7 @@
-"""Evaluate UniADet and save the paper's seven metrics to JSON and CSV."""
+"""Evaluate using saved checkpoint settings, including softmax order and Gaussian sigma."""
 
 import sys
 from uniadet.cli import main
 
 if __name__ == "__main__":
-    sys.argv.insert(1, "evaluate")
-    main()
+    main(["evaluate", *sys.argv[1:]])

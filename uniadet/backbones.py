@@ -5,10 +5,14 @@ import torch.nn.functional as F
 
 
 class CLIPEncoder(nn.Module):
-    def __init__(self, visual, layers):
+    def __init__(self, visual, layers, global_norm=True, pos_interpolation="bicubic"):
         super().__init__()
         self.visual = visual
         self.layers = tuple(layers)
+        if pos_interpolation not in ("bilinear", "bicubic"):
+            raise ValueError("CLIP positional interpolation must be bilinear or bicubic")
+        self.global_norm = global_norm
+        self.pos_interpolation = pos_interpolation
         if sorted(set(layers)) != list(layers) or not layers or layers[0] < 1 or layers[-1] > len(visual.transformer.resblocks):
             raise ValueError("layers must be unique, ascending, one-based block indices")
         dim = visual.proj.shape[1] if visual.proj is not None else visual.conv1.out_channels
@@ -28,17 +32,21 @@ class CLIPEncoder(nn.Module):
         pos = v.positional_embedding.to(x.dtype)
         side = int((pos.shape[0]-1)**0.5)
         spatial = pos[1:].reshape(side, side, -1).permute(2, 0, 1)[None]
-        spatial = F.interpolate(spatial, size=grid, mode="bicubic", align_corners=False)
+        spatial = F.interpolate(spatial, size=grid, mode=self.pos_interpolation, align_corners=False)
         pos = torch.cat((pos[:1], spatial[0].flatten(1).T))
         x = v.ln_pre(x + pos).transpose(0, 1)
         features = []
         for i, block in enumerate(v.transformer.resblocks, 1):
             x = block(x)
             if i in self.layers:
-                tokens = v.ln_post(x.transpose(0, 1))
+                raw = x.transpose(0, 1)
+                tokens = v.ln_post(raw)
                 if v.proj is not None:
                     tokens = tokens @ v.proj
-                features.append((tokens[:, 0].float(), tokens[:, 1:].float(), grid))
+                global_token = tokens[:, 0] if self.global_norm else raw[:, 0]
+                if not self.global_norm and v.proj is not None:
+                    global_token = global_token @ v.proj
+                features.append((global_token.float(), tokens[:, 1:].float(), grid))
             if i == self.layers[-1]:
                 break
         return features
@@ -90,12 +98,15 @@ class DINOEncoder(nn.Module):
         return [(cls.float(), patches.float(), grid) for patches, cls in outputs]
 
 
-def create_encoder(name="clip", layers=(12, 15, 18, 21, 24), weights=None, dino_repo=None):
+def create_encoder(name="clip", layers=(12, 15, 18, 21, 24), weights=None, dino_repo=None,
+                   *, clip_global_norm=True, clip_pos_interpolation="bicubic"):
+    if name != "clip" and (not clip_global_norm or clip_pos_interpolation != "bicubic"):
+        raise ValueError("CLIP feature ablations require --backbone clip")
     if name == "clip":
         from lib import load
         model, _ = load(weights or "ViT-L/14@336px", device="cpu")
         # Keep only vision tower; no text modules enter UniADet or the optimizer.
-        return CLIPEncoder(model.visual, layers).requires_grad_(False).eval()
+        return CLIPEncoder(model.visual, layers, clip_global_norm, clip_pos_interpolation).requires_grad_(False).eval()
     if name == "eva02_clip":
         import timm
         model = timm.create_model(

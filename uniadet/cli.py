@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import math
 import random
 import time
 from pathlib import Path
@@ -15,6 +16,79 @@ from .loss import training_loss
 from .model import UniADet, NormalMemory
 
 
+PREDICTION_DEFAULTS = {"lambda_f": 0.5, "lambda_p": 0.5, "zero_score_pooling": "layer", "gaussian_sigma": 4.}
+CLIP_FEATURE_DEFAULTS = {"clip_global_norm": True, "clip_pos_interpolation": "bicubic"}
+TRAINED_SETTING_DEFAULTS = {**CLIP_FEATURE_DEFAULTS, "softmax_before_resize": True, "mask_interpolation": "nearest"}
+# Missing checkpoint fields describe historical behavior, not new-run defaults.
+LEGACY_PREDICTION_DEFAULTS = {**PREDICTION_DEFAULTS, "gaussian_sigma": 0.}
+LEGACY_TRAINED_SETTING_DEFAULTS = {**TRAINED_SETTING_DEFAULTS, "softmax_before_resize": False}
+
+
+def resolve_training_settings(args):
+    """Resolve unset flags before building a model or serializing a training run."""
+    for name, default in {**PREDICTION_DEFAULTS, **TRAINED_SETTING_DEFAULTS}.items():
+        if getattr(args, name, None) is None:
+            setattr(args, name, default)
+    validate_settings(args)
+
+
+def restore_evaluation_settings(args, checkpoint):
+    """Restore the trained representation; allow explicit prediction overrides.
+
+    Older checkpoints predate the CLIP flags and use the original defaults.
+    None marks an absent CLI override, including for BooleanOptionalAction.
+    """
+    config = checkpoint["config"]
+    args.backbone = config.get("backbone") or "clip"
+    defaults = {"layers": [12, 15, 18, 21, 24], "temperature": 0.07,
+                "image_size": 512 if args.backbone == "dinov3" else 518}
+    for name, default in defaults.items():
+        setattr(args, name, config.get(name) if config.get(name) is not None else default)
+    for name, default in LEGACY_TRAINED_SETTING_DEFAULTS.items():
+        saved = config.get(name) if config.get(name) is not None else default
+        requested = getattr(args, name, None)
+        if requested is not None and requested != saved:
+            raise ValueError(f"{name}={requested!r} differs from checkpoint value {saved!r}; "
+                             "retrain the head for a changed feature representation")
+        setattr(args, name, saved)
+    for name in ("weights", "dino_repo"):
+        if getattr(args, name, None) is None:
+            setattr(args, name, config.get(name))
+    for name, default in LEGACY_PREDICTION_DEFAULTS.items():
+        if getattr(args, name, None) is None:
+            setattr(args, name, config.get(name) if config.get(name) is not None else default)
+    args.head_init_std = config.get("head_init_std")
+    validate_settings(args)
+
+
+def validate_settings(args):
+    for name in ("lambda_f", "lambda_p", "caa_probability", "mosaic_probability"):
+        value = getattr(args, name, 0.5)
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError(f"{name} must be finite and in [0, 1]")
+    for name in ("temperature", "lr", "dice_smooth"):
+        value = getattr(args, name, 1.)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be positive and finite")
+    for name in ("focal_gamma", "focal_weight", "normal_dice_weight", "anomaly_dice_weight",
+                 "classification_weight", "segmentation_weight", "weight_decay", "gaussian_sigma"):
+        value = getattr(args, name, 0.)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be nonnegative and finite")
+    smoothing = getattr(args, "focal_smoothing", 0.)
+    if not math.isfinite(smoothing) or not 0 <= smoothing < 0.5:
+        raise ValueError("focal_smoothing must be finite and in [0, 0.5)")
+    std = getattr(args, "head_init_std", None)
+    if std is not None and (not math.isfinite(std) or std <= 0):
+        raise ValueError("head_init_std must be positive and finite")
+    if any(grid < 1 for grid in getattr(args, "caa_grids", (2, 3))):
+        raise ValueError("CAA grids must be positive")
+    if any(not math.isfinite(beta) or not 0 <= beta < 1 for beta in getattr(args, "betas", (0.5, 0.999))):
+        raise ValueError("Adam betas must be finite and in [0, 1)")
+    if args.backbone != "clip" and (not args.clip_global_norm or args.clip_pos_interpolation != "bicubic"):
+        raise ValueError("CLIP feature ablations require --backbone clip")
+
+
 def seed_all(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -26,17 +100,42 @@ def seed_all(seed):
 def parser():
     p = argparse.ArgumentParser(description="UniADet training / zero- and few-shot evaluation")
     p.add_argument("mode", choices=("train", "evaluate"))
-    p.add_argument("--data", type=str, default="dataset", help="Dataset root containing AdaptCLIP meta.json")
+    p.add_argument("--data", type=str, help="Dataset root; defaults to datasets/VisA for training, datasets/MVTecAD for evaluation")
     p.add_argument("--backbone", choices=("clip", "eva02_clip", "dinov2", "dinov3"), default="clip")
     p.add_argument("--weights", help="Pretrained backbone weights (required for DINOv3)")
     p.add_argument("--dino-repo", help="Optional local official DINOv3 checkout")
     p.add_argument("--layers", type=int, nargs="+", default=[12, 15, 18, 21, 24])
     p.add_argument("--image-size", type=int)
     p.add_argument("--temperature", type=float, default=0.07)
-    p.add_argument("--lambda-f", type=float, default=0.5)
-    p.add_argument("--lambda-p", type=float, default=0.5)
+    p.add_argument("--lambda-f", type=float, default=None,
+                   help="Map fusion weight; train default 0.5, evaluate defaults to checkpoint")
+    p.add_argument("--lambda-p", type=float, default=None,
+                   help="Image fusion weight; train default 0.5, evaluate defaults to checkpoint")
+    p.add_argument("--clip-global-norm", action=argparse.BooleanOptionalAction, default=None,
+                   help="Normalize CLIP global tokens before projection (train default: enabled)")
+    p.add_argument("--clip-pos-interpolation", choices=("bilinear", "bicubic"), default=None,
+                   help="CLIP positional interpolation (train default: bicubic); requires retraining")
+    p.add_argument("--head-init-std", type=float,
+                   help="Gaussian head initialization std; default is feature_dim**-0.5")
+    p.add_argument("--softmax-before-resize", action=argparse.BooleanOptionalAction, default=None,
+                   help="Resize patch probabilities before interpolation (new training default: enabled)")
+    p.add_argument("--mask-interpolation", choices=("nearest", "bilinear"), default=None,
+                   help="Mask resizing: nearest (default) or bilinear followed by threshold 0.5")
+    p.add_argument("--gaussian-sigma", type=float, default=None,
+                   help="Spatial smoothing: new training default 4; evaluation restores checkpoint (legacy fallback 0)")
     p.add_argument("--epochs", type=int, default=15)
     p.add_argument("--lr", type=float, default=0.001)
+    p.add_argument("--betas", type=float, nargs=2, default=[0.5, 0.999])
+    p.add_argument("--weight-decay", type=float, default=0.)
+    p.add_argument("--focal-gamma", type=float, default=2.)
+    p.add_argument("--dice-smooth", type=float, default=1.)
+    p.add_argument("--focal-weight", type=float, default=1.)
+    p.add_argument("--normal-dice-weight", type=float, default=1.)
+    p.add_argument("--anomaly-dice-weight", type=float, default=1.)
+    p.add_argument("--focal-smoothing", type=float, default=0.,
+                   help="0 disables smoothing; 1e-5 uses AnomalyCLIP's two-class focal smoothing")
+    p.add_argument("--classification-weight", type=float, default=1.)
+    p.add_argument("--segmentation-weight", type=float, default=1.)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=10)
@@ -44,25 +143,39 @@ def parser():
     p.add_argument("--output", default="runs/uniadet")
     p.add_argument("--checkpoint")
     p.add_argument("--shots", type=int, default=0)
-    p.add_argument("--zero-score-pooling", choices=("layer", "map"), default="layer",
-                   help="Zero-shot spatial maximum per layer (Sec. 3.5), or legacy averaged map")
+    p.add_argument("--zero-score-pooling", choices=("layer", "map"), default=None,
+                   help="Zero-shot maximum per layer or after map averaging; defaults to checkpoint, else layer")
+    p.add_argument("--caa", dest="no_caa", action="store_false", help="Enable class-aware augmentation (default)")
     p.add_argument("--no-caa", action="store_true")
-    p.add_argument("--rotation", action=argparse.BooleanOptionalAction, default=True,
-                   help="Enable random right-angle rotations during training (default: enabled)")
-    p.add_argument("--horizontal-flip", action=argparse.BooleanOptionalAction, default=True,
-                   help="Enable random horizontal flips during training (default: enabled)")
-    p.add_argument("--vertical-flip", action=argparse.BooleanOptionalAction, default=True,
-                   help="Enable random vertical flips during training (default: enabled)")
+    p.set_defaults(no_caa=False)
+    p.add_argument("--caa-probability", type=float, default=0.5)
+    p.add_argument("--caa-grids", type=int, nargs="+", default=[2, 3])
+    p.add_argument("--mosaic-probability", type=float, default=0.5)
+    p.add_argument("--preserve-anomaly-mask", action=argparse.BooleanOptionalAction, default=True,
+                   help="Fall back to the candidate when augmentation erases its mask (default: enabled)")
+    p.add_argument("--rotation", action=argparse.BooleanOptionalAction, default=False,
+                   help="Enable random right-angle rotations during training (default: disabled)")
+    p.add_argument("--horizontal-flip", action=argparse.BooleanOptionalAction, default=False,
+                   help="Enable random horizontal flips during training (default: disabled)")
+    p.add_argument("--vertical-flip", action=argparse.BooleanOptionalAction, default=False,
+                   help="Enable random vertical flips during training (default: disabled)")
     p.add_argument("--split", default="test", help="Auxiliary training split; paper uses test")
+    p.add_argument("--categories", nargs="+", help="Include only these categories in this training/evaluation dataset")
+    p.add_argument("--exclude-categories", nargs="+", help="Exclude categories, including from CAA sampling")
     return p
 
 
 def build(args):
-    encoder = create_encoder(args.backbone, args.layers, args.weights, args.dino_repo)
-    return UniADet(encoder, args.temperature, args.lambda_f, args.lambda_p).to(args.device)
+    resolve_training_settings(args)
+    encoder = create_encoder(args.backbone, args.layers, args.weights, args.dino_repo,
+                             clip_global_norm=args.clip_global_norm,
+                             clip_pos_interpolation=args.clip_pos_interpolation)
+    return UniADet(encoder, args.temperature, args.lambda_f, args.lambda_p,
+                   getattr(args, "head_init_std", None), args.softmax_before_resize).to(args.device)
 
 
 def train(args):
+    resolve_training_settings(args)
     print(f"Training device: {args.device} (PyTorch {torch.__version__}, CUDA build {torch.version.cuda})", flush=True)
     if torch.device(args.device).type == "cpu" and torch.version.cuda and not torch.cuda.is_available():
         print("CUDA is unavailable; training will run on CPU. Check PyTorch CUDA and NVIDIA driver compatibility.", flush=True)
@@ -79,7 +192,11 @@ def train(args):
                              mosaic_probability=getattr(args, "mosaic_probability", 0.5),
                              rotation=getattr(args, "rotation", True),
                              horizontal_flip=getattr(args, "horizontal_flip", True),
-                             vertical_flip=getattr(args, "vertical_flip", True))
+                             vertical_flip=getattr(args, "vertical_flip", True),
+                             preserve_anomaly_mask=getattr(args, "preserve_anomaly_mask", True),
+                             categories=getattr(args, "categories", None),
+                             exclude_categories=getattr(args, "exclude_categories", None),
+                             mask_interpolation=args.mask_interpolation)
     # Explicitly reject incomplete supervision even when augmentation is disabled.
     for i, record in enumerate(dataset.records):
         if record["anomaly"] and not (dataset.root / record.get("mask_path", "")).is_file():
@@ -112,7 +229,11 @@ def train(args):
             components = training_loss(outputs, batch["label"].to(args.device), batch["mask"].to(args.device),
                                        focal_gamma=getattr(args, "focal_gamma", 2.), dice_smooth=getattr(args, "dice_smooth", 1.),
                                        classification_weight=getattr(args, "classification_weight", 1.),
-                                       segmentation_weight=getattr(args, "segmentation_weight", 1.), return_components=True)
+                                       segmentation_weight=getattr(args, "segmentation_weight", 1.),
+                                       focal_weight=getattr(args, "focal_weight", 1.),
+                                       normal_dice_weight=getattr(args, "normal_dice_weight", 1.),
+                                       anomaly_dice_weight=getattr(args, "anomaly_dice_weight", 1.),
+                                       focal_smoothing=getattr(args, "focal_smoothing", 0.), return_components=True)
             loss = components["loss"]
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -256,12 +377,7 @@ def evaluate(args):
         raise ValueError("--checkpoint is required for evaluation")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     config = checkpoint["config"]
-    # Model/preprocessing must match training. Fusion weights may be overridden.
-    for name in ("backbone", "layers", "image_size", "temperature"):
-        setattr(args, name, config[name])
-    for name in ("weights", "dino_repo"):
-        if getattr(args, name) is None:
-            setattr(args, name, config.get(name))
+    restore_evaluation_settings(args, checkpoint)
     # Preserve the effective settings, including the encoder source and pooling,
     # so comparisons cannot silently mix different evaluation configurations.
     Path(args.output).mkdir(parents=True, exist_ok=True)
@@ -270,12 +386,16 @@ def evaluate(args):
          "checkpoint_epoch": checkpoint.get("epoch")}, indent=2))
     model = build(args).eval()
     model.head.load_state_dict(checkpoint["head"])
-    dataset = AnomalyDataset(args.data, "test", args.image_size, args.backbone)
+    dataset = AnomalyDataset(args.data, "test", args.image_size, args.backbone,
+                             categories=getattr(args, "categories", None),
+                             exclude_categories=getattr(args, "exclude_categories", None),
+                             mask_interpolation=args.mask_interpolation)
     memory = None
     if args.shots:
-        records = normal_references(args.data, args.shots, args.seed)
+        records = normal_references(args.data, args.shots, args.seed, categories=dataset.groups)
         (Path(args.output)/"references.json").write_text(json.dumps(records, indent=2))
-        references = AnomalyDataset(args.data, image_size=args.image_size, backbone=args.backbone, records=records)
+        references = AnomalyDataset(args.data, image_size=args.image_size, backbone=args.backbone, records=records,
+                                    mask_interpolation=args.mask_interpolation)
         memory = NormalMemory()
         for item in references:
             key = (item["category"], item["view"])
@@ -286,7 +406,8 @@ def evaluate(args):
         started = time.monotonic()
         rows = [dataset.records[i] for i in dataset.groups[category]]
         print(f"Evaluating {category}: {len(rows)} images...", flush=True)
-        subset = AnomalyDataset(args.data, image_size=args.image_size, backbone=args.backbone, records=rows)
+        subset = AnomalyDataset(args.data, image_size=args.image_size, backbone=args.backbone, records=rows,
+                                mask_interpolation=args.mask_interpolation)
         labels, scores, masks, maps = [], [], [], []
         # A few-shot batch must use one view's normal memory. Zero-shot
         # batches can mix views because no reference bank is consulted.
@@ -306,7 +427,7 @@ def evaluate(args):
             key = (category, batch["view"][0])
             score, amap = model.predict(
                 batch["image"].to(args.device, non_blocking=use_cuda), memory, key,
-                zero_score_pooling=args.zero_score_pooling)
+                zero_score_pooling=args.zero_score_pooling, gaussian_sigma=args.gaussian_sigma)
             batch_scores = score.cpu().tolist()
             batch_labels = batch["label"].tolist()
             valid = batch["has_mask"].bool()
@@ -331,8 +452,9 @@ def evaluate(args):
     (Path(args.output)/"predictions.json").write_text(json.dumps(predictions, indent=2))
 
 
-def main():
-    args = parser().parse_args()
+def main(argv=None):
+    args = parser().parse_args(argv)
+    args.data = args.data or ("datasets/VisA" if args.mode == "train" else "datasets/MVTecAD")
     if args.batch_size < 1:
         raise ValueError("batch-size must be positive")
     if args.shots < 0 or args.epochs < 1:
