@@ -1,12 +1,8 @@
 # UniADet: step-by-step reproduction and controlled ablations
 
-For copy-and-run commands with experiment presets, see the Vietnamese
-[RUN_EXPERIMENTS_VI.md](RUN_EXPERIMENTS_VI.md). These presets include softmax
-before resize and paired Gaussian OFF/ON evaluations on full zero-shot MVTec.
-Preset defaults train on all VisA; `--aux-holdout` explicitly opts into a VisA
-holdout. Configuration selection uses MVTec test results as requested.
-Use `python train_test.py --experiment baseline --dry-run` to inspect a plan.
-Without `--experiment`, the editable configuration workflow below is unchanged.
+For the editable configuration workflow, see the Vietnamese
+[RUN_EXPERIMENTS_VI.md](RUN_EXPERIMENTS_VI.md). All run settings live in
+`config.py`; inspect them with `python train_test.py --dry-run`.
 
 Run commands from the repository root in Bash. The baseline below follows the
 paper's documented CLIP settings and keeps the selected softmax-before-resize, Gaussian sigma 4, and layer-pooling
@@ -25,7 +21,7 @@ uv run python -c "import torch; print(torch.__version__, torch.version.cuda, tor
 uv run python -m pytest -q
 ```
 
-CUDA availability should print `True` for GPU training. In `train_test.py`,
+CUDA availability should print `True` for GPU training. In `config.py`,
 `TRAIN_CONFIG["device"] = None` automatically selects CUDA or CPU. Set it to
 `"cuda"` to require GPU execution, or `"cpu"` for a small functional check.
 Pretrained CLIP weights download on first use if they are not already cached.
@@ -65,15 +61,14 @@ Expected test counts: VisA has 962 normal and 1,200 anomaly images; MVTec has
 467 normal and 1,258 anomaly images. These are the labeled auxiliary splits
 used for training as well as the target splits used for evaluation.
 
-## 3. Configure `train_test.py`
+## 3. Configure `config.py`
 
 The selected defaults run with `python train_test.py`: full VisA training,
 zero-shot MVTec evaluation at epoch 15, softmax before resize, Gaussian sigma 4,
-and layer pooling. Experiment presets still retain their original ablation
-settings for reproducible comparisons.
+and layer pooling. Set each ablation explicitly in `config.py`.
 
 The default file is ready for a fixed CLIP baseline. Edit configuration entries
-at the top of `train_test.py`; no long training or evaluation command is needed.
+in `config.py`; no long training or evaluation command is needed.
 Use a new `MODEL` name for each experiment because logs append and checkpoints
 can be overwritten when you reuse a name.
 
@@ -195,7 +190,7 @@ when preserving outputs for several reference seeds.
 
 ## 6. Turn fixes and ablations on/off in `TRAIN_CONFIG`
 
-Edit the existing dictionary entries in `train_test.py` using Python `True`,
+Edit the existing dictionary entries in `config.py` using Python `True`,
 `False`, and `None`. These settings apply to the next training run, so give it
 a fresh `MODEL` name.
 
@@ -265,15 +260,15 @@ CLIP representation, weights 0.5, and layer pooling. Few-shot image scoring
 always uses the maximum of the fused map, following Eqs. 11–12.
 
 The paper does not explicitly settle the final zero-shot layer reduction.
-The default presets select settings using zero-shot MVTec results, as requested.
+The selected defaults were chosen using local zero-shot MVTec results.
 Record that selection protocol alongside the reported scores.
 
 For map pooling, Gaussian smoothing applies to the final mean/fused anomaly
 map before its spatial maximum. For zero-shot layer pooling, each layer is
 smoothed before its maximum; the returned map is still the smoothed mean map.
-Few-shot smoothing applies after reference-map fusion. `gaussian-off` and
-`gaussian-on` presets both use map pooling and the same baseline head, isolating
-sigma 0 versus 4 without retraining.
+Few-shot smoothing applies after reference-map fusion. To compare smoothing,
+set `TEST_CONFIG["zero_score_pooling"] = "map"`, reuse the same checkpoint,
+and evaluate sigma 0 and 4 under separate `MODEL` output names.
 
 ## 8. Optional: use the runner for held-out auxiliary categories
 

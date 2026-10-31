@@ -78,7 +78,8 @@ def test_start_epoch_only_affects_test():
         dev.main(["--mode", "train_test", "--start-epoch", "5"])
     args = train.call_args.args[0]
     assert not hasattr(args, "start_epoch")
-    test.assert_called_once_with(args, 5)
+    assert test.call_args.args == (args, 5)
+    assert test.call_args.kwargs["config"].model == dev.MODEL
     with pytest.raises(SystemExit):
         dev.main(["--mode", "train", "--start-epoch", "5"])
 
@@ -113,7 +114,7 @@ def test_config_selects_checkpoint_epochs(tmp_path, monkeypatch, epochs, expecte
 @pytest.mark.parametrize("epochs", [[], [0], [True], [1.5], "15", 15])
 def test_invalid_checkpoint_epoch_list(tmp_path, monkeypatch, epochs):
     monkeypatch.setattr(dev, "TEST_CONFIG", dict(data=["target"], shots=[0], checkpoint=str(tmp_path), epochs=epochs))
-    with pytest.raises(ValueError, match="TEST_CONFIG.*epochs"):
+    with pytest.raises(ValueError, match="test configuration.*epochs"):
         dev.test_checkpoints(dev.training_args(), 1)
 
 
@@ -177,3 +178,18 @@ def test_cli_entrypoints_use_selected_defaults_and_dataset_paths():
         cli.main(["evaluate", "--checkpoint", "saved.pt"])
     assert evaluate.call_args.args[0].data == "datasets/MVTecAD"
     assert evaluate.call_args.args[0].gaussian_sigma is None
+
+
+def test_unknown_training_setting_fails_early():
+    config = dev.run_config()
+    config.train["learning_rate"] = 0.01
+    with pytest.raises(ValueError, match="Unknown training settings.*learning_rate"):
+        dev.workflow.training_args(config)
+
+
+def test_partial_training_config_uses_cli_defaults():
+    config = dev.workflow.RunConfig("minimal")
+    args = dev.workflow.training_args(config)
+    assert args.data == "datasets/VisA"
+    assert args.log_interval == 50
+    assert args.gaussian_sigma == 4.

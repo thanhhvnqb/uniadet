@@ -1,7 +1,6 @@
 """AdaptCLIP-derived ablations retain old checkpoints and isolate experiments."""
 import copy
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -131,78 +130,38 @@ def test_legacy_defaults_and_new_settings_restore_with_override_protection():
         cli.restore_evaluation_settings(args, {"config": config})
 
 
-@pytest.mark.parametrize("name,changed", [
-    ("softmax-first", {"softmax_before_resize": True}),
-    ("no-global-norm", {"clip_global_norm": False}),
-    ("bilinear-pos", {"clip_pos_interpolation": "bilinear"}),
-    ("smoothed-focal", {"focal_smoothing": 1e-5}),
-    ("bilinear-mask", {"mask_interpolation": "bilinear"}),
-])
-def test_training_presets_change_only_one_factor_and_isolate_configs(name, changed):
-    original = dev.MODEL, dev.TRAIN_CONFIG, dev.TEST_CONFIG, dev.TRAIN_DATASET
-    with dev.experiment_config("baseline"):
-        baseline = copy.deepcopy(dev.TRAIN_CONFIG)
-        baseline_test = copy.deepcopy(dev.TEST_CONFIG)
-    with dev.experiment_config(name):
-        difference = {key: value for key, value in dev.TRAIN_CONFIG.items() if baseline[key] != value}
-        assert difference == changed
-        assert dev.TEST_CONFIG == baseline_test
-        assert dev.TRAIN_CONFIG["exclude_categories"] is None
-        assert dev.TEST_CONFIG["categories"] is None
-        assert dev.MODEL == f"uniadet-final-{name}"
-    assert dev.MODEL == original[0] and dev.TRAIN_CONFIG is original[1] and dev.TEST_CONFIG is original[2]
+def test_run_configs_do_not_share_nested_values():
+    first, second = dev.run_config(), dev.run_config()
+    first.train["layers"].append(99)
+    first.test["shots"].append(4)
+    assert 99 not in second.train["layers"]
+    assert 4 not in second.test["shots"]
+    assert 99 not in dev.TRAIN_CONFIG["layers"]
 
 
-def test_gaussian_presets_reuse_one_baseline_and_match_other_settings():
-    with dev.experiment_config("gaussian-off"):
-        train = copy.deepcopy(dev.TRAIN_CONFIG)
-        off = copy.deepcopy(dev.TEST_CONFIG)
-    with dev.experiment_config("gaussian-on"):
-        assert dev.TRAIN_CONFIG == train
-        difference = {key: value for key, value in dev.TEST_CONFIG.items() if off[key] != value}
-        assert difference == {"gaussian_sigma": 4.}
-        assert dev.TEST_CONFIG["zero_score_pooling"] == "map"
-        assert Path(dev.TEST_CONFIG["checkpoint"]).parts[-2:] == ("uniadet-final-baseline", "train_VisA")
-
-
-def test_full_data_preset_clears_holdout_and_points_to_target():
-    with dev.experiment_config("softmax-first", full_data=True):
-        assert dev.MODEL == "uniadet-final-softmax-first"
-        assert dev.TRAIN_CONFIG["exclude_categories"] is None
-        assert dev.TRAIN_CONFIG["categories"] is None
-        assert dev.TEST_CONFIG["data"] == ["datasets/MVTecAD"]
-        assert dev.TEST_CONFIG["categories"] is None and dev.TEST_CONFIG["checkpoint"] is None
-    with dev.experiment_config("gaussian-on", full_data=True):
-        assert "uniadet-final-baseline" in dev.TEST_CONFIG["checkpoint"]
-
-
-def test_dry_run_has_no_training_evaluation_or_filesystem_side_effects(tmp_path, monkeypatch, capsys):
+def test_dry_run_has_no_side_effects_and_overrides_do_not_leak(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(dev, "RUNS_ROOT", str(tmp_path / "runs"))
+    original = copy.deepcopy((dev.TRAIN_CONFIG, dev.TEST_CONFIG))
     with patch.object(dev.cli, "train") as train, patch.object(dev, "test_checkpoints") as evaluate:
-        dev.main(["--experiment", "softmax-first", "--device", "cpu", "--workers", "0", "--dry-run"])
+        dev.main(["--device", "cpu", "--workers", "0", "--dry-run"])
     plan = json.loads(capsys.readouterr().out)
-    assert plan["model"] == "uniadet-final-softmax-first"
+    assert plan["model"] == dev.MODEL
     assert plan["training"]["softmax_before_resize"] is True
     assert plan["training"]["device"] == "cpu" and plan["training"]["workers"] == 0
+    assert (dev.TRAIN_CONFIG, dev.TEST_CONFIG) == original
     train.assert_not_called()
     evaluate.assert_not_called()
     assert not (tmp_path / "runs").exists()
 
 
-def test_gaussian_commands_evaluate_without_retraining():
+def test_test_mode_never_trains():
     with patch.object(dev.cli, "train") as train, patch.object(dev, "test_checkpoints") as evaluate:
-        dev.main(["--experiment", "gaussian-on", "--device", "cpu"])
+        dev.main(["--mode", "test", "--device", "cpu"])
     train.assert_not_called()
     evaluate.assert_called_once()
-    assert evaluate.call_args.args[0].model == "uniadet-final-gaussian-on"
+
+
+@pytest.mark.parametrize("flag", ["--experiment", "--aux-holdout", "--full-data"])
+def test_removed_run_shortcuts_are_rejected(flag):
     with pytest.raises(SystemExit):
-        dev.main(["--experiment", "gaussian-on", "--mode", "train_test"])
-
-
-def test_aux_holdout_is_explicit_opt_in(capsys):
-    dev.main(["--experiment", "baseline", "--aux-holdout", "--dry-run"])
-    plan = json.loads(capsys.readouterr().out)
-    assert plan["model"] == "uniadet-aux-baseline"
-    assert plan["training"]["exclude_categories"] == ["pcb1", "pcb2"]
-    assert plan["test_overrides"]["data"] == ["datasets/VisA"]
-    assert plan["test_overrides"]["categories"] == ["pcb1", "pcb2"]
+        dev.main([flag])

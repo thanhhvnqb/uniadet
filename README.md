@@ -7,10 +7,8 @@ workflow, on/off configuration switches, checkpoint compatibility, and auxiliary
 experiments. The mask-preservation fix is enabled by default; feature-extraction
 alternatives remain explicit ablations because the paper does not settle them.
 For ordered, copy-and-run experiment commands in Vietnamese, use
-[RUN_EXPERIMENTS_VI.md](RUN_EXPERIMENTS_VI.md). `--experiment baseline` uses a
-full VisA training and zero-shot MVTec evaluation. `--aux-holdout` opts into
-a separate VisA category holdout; `--full-data` remains a compatibility alias
-for the default preset protocol. `--dry-run` prints the plan without running a model.
+[RUN_EXPERIMENTS_VI.md](RUN_EXPERIMENTS_VI.md). Edit `config.py` to configure a run;
+`--dry-run` prints the effective plan without running a model.
 
 Run the selected configuration with `python train_test.py`: softmax before
 resize, Gaussian sigma 4, layer pooling, full VisA training and zero-shot MVTec
@@ -127,9 +125,9 @@ The paper trains on the **auxiliary dataset’s test split**, which contains bot
 
 Training applies a uniformly sampled rotation of 0°, 90°, 180°, or 270° and independent horizontal and vertical flips (50% probability each). Images and ground-truth masks receive identical transforms before resizing, preserving binary masks and image-level labels. These augmentations remain enabled with `--no-caa`; evaluation and reference images are not augmented.
 
-Rotation is disabled by default. Use `python train.py --no-rotation` to disable it or `--rotation` to enable it explicitly. In `train_test.py`, set `TRAIN_CONFIG["rotation"]` to `False` or `True`. Horizontal and vertical flips remain enabled independently of this setting.
+Rotation is disabled by default. Use `python train.py --no-rotation` to disable it or `--rotation` to enable it explicitly. In `config.py`, set `TRAIN_CONFIG["rotation"]` to `False` or `True`. Horizontal and vertical flips remain enabled independently of this setting.
 
-Flips can also be controlled independently with `--horizontal-flip` / `--no-horizontal-flip` and `--vertical-flip` / `--no-vertical-flip`. Both default to disabled; when enabled, each has a 50% chance per image. In `train_test.py`, set `TRAIN_CONFIG["horizontal_flip"]` and `TRAIN_CONFIG["vertical_flip"]` to `False` or `True`. To disable all geometric augmentation, pass `--no-rotation --no-horizontal-flip --no-vertical-flip`.
+Flips can also be controlled independently with `--horizontal-flip` / `--no-horizontal-flip` and `--vertical-flip` / `--no-vertical-flip`. Both default to disabled; when enabled, each has a 50% chance per image. In `config.py`, set `TRAIN_CONFIG["horizontal_flip"]` and `TRAIN_CONFIG["vertical_flip"]` to `False` or `True`. To disable all geometric augmentation, pass `--no-rotation --no-horizontal-flip --no-vertical-flip`.
 
 ```bash
 python train.py --data datasets/visa --backbone clip --output runs/visa
@@ -160,7 +158,7 @@ python test.py --data datasets/MVTecAD --checkpoint runs/visa_eva02_clip/epoch_1
 EVA's `--weights` accepts a local **timm vision tower** state dictionary,
 including the pretrained 1024-to-768 projection (`head`); the original full
 EVA-CLIP checkpoint must first be converted to timm layout. Evaluation restores
-the backbone from the training checkpoint. In `train_test.py`, set
+the backbone from the training checkpoint. In `config.py`, set
 `TRAIN_CONFIG["backbone"] = "eva02_clip"` and give `MODEL` a separate experiment
 name to keep its checkpoints and comparison CSV separate from CLIP runs.
 
@@ -219,7 +217,7 @@ the zero-shot protocol.
 
 Evaluation writes `metrics.json` with per-category and macro image/pixel AUROC, PR-curve area (AUPR), and F1max, plus pixel AUPRO (8-connected regions, normalized over FPR 0–0.3). `metrics.json` includes an explicit `average` entry (also available as `macro_mean`), and `metrics.csv` ends with an `Average` row. These are unweighted category averages for each metric, excluding undefined values. `metrics.csv` stores the seven paper columns as percentages; JSON values remain in [0, 1]. Evaluation also saves `predictions.json` with image scores. Undefined metrics (only one ground-truth class) are `null` and excluded from macro means. Medical segmentation-only datasets have undefined image metrics. Visualization exports are not implemented in the new evaluator. It stores dense predictions for one category at a time; very large categories can still need substantial host RAM. Memory banks retain all reference patches; only nearest-neighbor working memory is chunked.
 
-Current validation: Python 3.12.3, PyTorch 2.7.1+cu126 and torchvision 0.22.1+cu126: **120 tests passed**. The real VisA candle case now retains a nonempty mask, and a real CLIP toothbrush audit exactly matches the old checkpoint scores. Full benchmark retraining after the fixes has not been run. See [REPRODUCTION_GUIDE.md](REPRODUCTION_GUIDE.md) for current commands and [CODE_PAPER_REVIEW.md](CODE_PAPER_REVIEW.md) for the pre-fix comparison.
+Historical validation: Python 3.12.3, PyTorch 2.7.1+cu126 and torchvision 0.22.1+cu126. The real VisA candle case now retains a nonempty mask, and a real CLIP toothbrush audit exactly matches the old checkpoint scores. Full benchmark retraining after the fixes has not been run. See [REPRODUCTION_GUIDE.md](REPRODUCTION_GUIDE.md) for current commands and [CODE_PAPER_REVIEW.md](CODE_PAPER_REVIEW.md) for the pre-fix comparison.
 
 Tests cover cosine scoring, task/layer gradient separation, frozen encoder behavior, exact chunked retrieval, class/view bank isolation, fusion arithmetic, checkpoint roundtrip, CAA label preservation, reference split isolation, encoder token contracts, and synthetic training/evaluation. They require no pretrained downloads. These checks establish implementation behavior, not benchmark accuracy. Real backbone integrations and full dataset results require separate validation with pretrained weights.
 
@@ -258,7 +256,7 @@ and elapsed epoch seconds. Epoch losses are sample-weighted averages. Logs
 append when reusing an output directory; matching checkpoints are overwritten.
 
 For the configuration-driven workflow, edit `MODEL`, `TRAIN_CONFIG`, and
-`TEST_CONFIG` at the top of `train_test.py`, then run:
+`TEST_CONFIG` in `config.py`, then run:
 
 ```bash
 python train_test.py                         # train, then evaluate epoch 15 by default
