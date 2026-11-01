@@ -41,7 +41,7 @@ pip install pytest
 python -m pytest -q
 ```
 
-CLIP, EVA02-CLIP and DINOv2 download pretrained weights on first use. DINOv3 requires separately obtained official weights and accepts a local official repository checkout via `--dino-repo`. Backbone code/weights retain their respective upstream licenses and access conditions.
+CLIP, EVA02-CLIP and DINOv2 download pretrained weights on first use. DINOv3 automatically downloads and caches `facebook/dinov3-vitl16-pretrain-lvd1689m` through Transformers when `--weights` is omitted. First accept access at [the Meta model page](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m), then run `hf auth login` or set `HF_TOKEN`. Subsequent runs reuse the Hugging Face cache (`HF_HOME` controls its location). Explicit official `.pth` checkpoints still use Torch Hub and accept a local official repository checkout via `--dino-repo`; that option applies only when `--weights` is supplied. Backbone code/weights retain their respective upstream licenses and access conditions.
 
 If training reports that the NVIDIA driver is too old, check `python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`. An unavailable CUDA device makes the default training device CPU. On a driver supporting CUDA 12.6, install compatible wheels with `python -m pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126`, then restart training with `--device cuda` to require GPU execution.
 
@@ -135,7 +135,7 @@ python test.py --data datasets/mvtec --checkpoint runs/visa/epoch_15.pt --shots 
 python test.py --data datasets/mvtec --checkpoint runs/visa/epoch_15.pt --shots 4 --output runs/mvtec_four
 
 python train.py --data datasets/visa --backbone dinov2 --output runs/visa_dinov2
-python train.py --data datasets/visa --backbone dinov3 --weights /weights/dinov3_vitl16.pth --dino-repo /repos/dinov3 --output runs/visa_dinov3
+python train.py --data datasets/visa --backbone dinov3 --output runs/visa_dinov3
 ```
 
 For comparison with CLIP, select `--backbone eva02_clip`. This uses

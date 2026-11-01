@@ -98,6 +98,35 @@ class DINOEncoder(nn.Module):
         return [(cls.float(), patches.float(), grid) for patches, cls in outputs]
 
 
+class DINOv3HFEncoder(nn.Module):
+    """Hugging Face DINOv3 with normalized intermediate CLS/patch features."""
+
+    def __init__(self, model, layers):
+        super().__init__()
+        self.model, self.layers = model, tuple(layers)
+        config = model.config
+        if (not layers or sorted(set(layers)) != list(layers)
+                or layers[0] < 1 or layers[-1] > config.num_hidden_layers):
+            raise ValueError("Invalid one-based DINO feature layers")
+        self.patch_size = config.patch_size
+        self.dims = [config.hidden_size] * len(layers)
+        self.num_register_tokens = config.num_register_tokens
+
+    @torch.no_grad()
+    def forward(self, images):
+        if any(s % self.patch_size for s in images.shape[-2:]):
+            raise ValueError("Image dimensions must be divisible by patch size")
+        outputs = self.model(pixel_values=images, output_hidden_states=True, return_dict=True)
+        grid = tuple(s // self.patch_size for s in images.shape[-2:])
+        features = []
+        for layer in self.layers:
+            # hidden_states[0] is the embedding output; block indices are one-based.
+            tokens = self.model.norm(outputs.hidden_states[layer])
+            features.append((tokens[:, 0].float(),
+                             tokens[:, 1 + self.num_register_tokens:].float(), grid))
+        return features
+
+
 def create_encoder(name="clip", layers=(12, 15, 18, 21, 24), weights=None, dino_repo=None,
                    *, clip_global_norm=True, clip_pos_interpolation="bicubic"):
     if name != "clip" and (not clip_global_norm or clip_pos_interpolation != "bicubic"):
@@ -121,7 +150,18 @@ def create_encoder(name="clip", layers=(12, 15, 18, 21, 24), weights=None, dino_
         return DINOEncoder(model, layers, 14).requires_grad_(False).eval()
     if name == "dinov3":
         if not weights:
-            raise ValueError("DINOv3 requires --weights pointing to authorized pretrained weights")
+            from transformers import AutoModel
+            model_id = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+            try:
+                model = AutoModel.from_pretrained(model_id)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Could not download/load {model_id}. Accept model access at "
+                    f"https://huggingface.co/{model_id}, then run `hf auth login` "
+                    "or set HF_TOKEN. Downloads are cached for subsequent runs. "
+                    "Alternatively supply --weights with an official checkpoint."
+                ) from exc
+            return DINOv3HFEncoder(model, layers).requires_grad_(False).eval()
         repo = dino_repo or "facebookresearch/dinov3"
         model = torch.hub.load(repo, "dinov3_vitl16", source="local" if dino_repo else "github", weights=weights)
         return DINOEncoder(model, layers, 16).requires_grad_(False).eval()

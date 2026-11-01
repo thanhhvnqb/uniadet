@@ -14,3 +14,5 @@ huggingface-hub
 safetensors
 # DINOv2 hub dependency
 timm>=1.0.16
+# Automatic DINOv3 loading from the Hugging Face Hub
+transformers>=4.56.0,<5
