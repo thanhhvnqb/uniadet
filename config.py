@@ -1,13 +1,13 @@
 """Editable run configuration. No named experiments or implicit overrides."""
 
 MODE = "train_test"  # train, test, or train_test (test saved checkpoints after training)
-MODEL = "uniadet-best-current"  # Output directory name; use a new name for each run
+MODEL = "uniadet-dinov3"  # Output directory name; use a new name for each run
 RUNS_ROOT = "runs"
 TRAIN_DATASET = None  # None uses the training data directory name
 
 TRAIN_CONFIG = {
     # Data and frozen backbone. Excluded categories cannot enter CAA mosaics.
-    "data": "datasets/VisA", "backbone": "clip",  # clip, eva02_clip, dinov2, dinov3
+    "data": "datasets/VisA", "backbone": "dinov3",  # clip, eva02_clip, dinov2, dinov3
     "weights": None, "dino_repo": None, "layers": [12, 15, 18, 21, 24],
     "image_size": None,  # Auto: 518 for CLIP/DINOv2; 512 for DINOv3
     "split": "test",  # Labeled auxiliary test split, as used in the paper

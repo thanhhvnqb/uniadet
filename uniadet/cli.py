@@ -36,7 +36,7 @@ def parser():
     p.add_argument("mode", choices=("train", "evaluate"))
     p.add_argument("--data", type=str, help="Dataset root; defaults to datasets/VisA for training, datasets/MVTecAD for evaluation")
     p.add_argument("--backbone", choices=("clip", "eva02_clip", "dinov2", "dinov3"), default="clip")
-    p.add_argument("--weights", help="Pretrained backbone weights (required for DINOv3)")
+    p.add_argument("--weights", help="Optional pretrained backbone weights (downloaded automatically if omitted)")
     p.add_argument("--dino-repo", help="Optional local official DINOv3 checkout")
     p.add_argument("--layers", type=int, nargs="+", default=[12, 15, 18, 21, 24])
     p.add_argument("--image-size", type=int)

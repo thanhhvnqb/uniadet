@@ -1,0 +1,1 @@
+rclone copy -v ./runs/ gdrive:Working/uniadet/ISLab-Svr --drive-chunk-size=256M --transfers=40 --checkers=40 --tpslimit=9 --fast-list --max-backlog 200000
