@@ -1,0 +1,9 @@
+backbone,dataset,shots,metric,main_table,main_reported,detail_table,detail_reported
+dinov2,Real-IAD,2,I-AUROC,10,89.0±0.7,32,89.8±0.4
+dinov2,Real-IAD,2,I-AUPR,10,86.7±1.4,32,87.8±0.3
+dinov2,Real-IAD,2,P-AUROC,10,99.1±0.2,32,99.0±0.1
+dinov2,Real-IAD,2,P-AUPR,10,46.7±2.3,32,49.0±0.6
+dinov2,Real-IAD,4,I-AUROC,11,90.3±0.2,32,90.6±0.1
+dinov2,Real-IAD,4,I-AUPR,11,88.4±0.3,32,88.5±0.1
+dinov2,Real-IAD,4,P-AUROC,11,99.1±0.1,32,99.2±0.1
+dinov2,Real-IAD,4,P-AUPR,11,48.5±1.2,32,49.2±0.1

@@ -208,7 +208,7 @@ a fresh `MODEL` name.
 | `softmax_before_resize` | `True` | `False` restores logit resizing; requires retraining |
 | `mask_interpolation` | `"nearest"` | `"bilinear"` resizes masks then thresholds at 0.5; requires retraining |
 | `temperature` | `0.07` | Another positive training temperature |
-| `head_init_std` | `None` (`feature_dim**-0.5`) | E.g. `0.02` fixes Gaussian initialization scale |
+| `head_init_std` | `None` (`backbone_dim**-0.5`) | E.g. `0.02` fixes Gaussian initialization scale |
 | `focal_smoothing` | `0.0` | `1e-5` enables AnomalyCLIP's smoothed focal form |
 | `focal_weight` | `1.0` | `0.0` disables focal loss |
 | `normal_dice_weight` | `1.0` | `0.0` disables normal Dice |

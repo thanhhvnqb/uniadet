@@ -19,7 +19,7 @@ TRAIN_CONFIG = {
     "softmax_before_resize": True,  # Selected configuration: resize probabilities
     "mask_interpolation": "nearest",  # "bilinear" uses threshold 0.5 after resizing
     "temperature": 0.07,
-    "head_init_std": None,  # None uses feature_dim**-0.5; e.g. 0.02 for ablation
+    "head_init_std": None,  # None uses backbone_dim**-0.5
 
     # Optimization and execution. None device automatically selects CUDA/CPU.
     "epochs": 15, "lr": 0.001, "betas": [0.5, 0.999], "weight_decay": 0.0,
@@ -42,10 +42,11 @@ TRAIN_CONFIG = {
     "lambda_f": 0.5, "lambda_p": 0.5,
     "zero_score_pooling": "layer",  # "layer" or "map"; final layer reduction is underspecified
     "gaussian_sigma": 4.0,  # Selected configuration; 0 disables inference smoothing
+    "image_score_gaussian_sigma": None,  # None inherits map smoothing; 0 uses raw image-score peaks
 }
 
 TEST_CONFIG = {
-    "data": ["datasets/MVTecAD"],  # Target dataset roots
+    "data": ["datasets/Real-IAD"],  # Default validation target: train VisA -> Real-IAD
     "shots": [0],  # Set [0, 1, 2, 4] for zero- and few-shot evaluation
     "epochs": [15],  # Paper comparison: epoch 15 only. None = sweep all saved epochs
     "start_epoch": 1,  # Additional inclusive lower bound; never resumes training
@@ -54,6 +55,7 @@ TEST_CONFIG = {
     # None restores the selected checkpoint's settings; values are explicit overrides.
     "lambda_f": None, "lambda_p": None, "zero_score_pooling": None,  # None restores checkpoint
     "gaussian_sigma": None,  # None restores checkpoint; 0 disables smoothing
+    "image_score_gaussian_sigma": None,  # None restores checkpoint; historical default inherits map sigma
     "weights": None, "dino_repo": None,  # Only override to relocate pretrained sources
     "categories": None, "exclude_categories": None,  # Target/validation categories
 

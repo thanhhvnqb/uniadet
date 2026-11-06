@@ -1,0 +1,15 @@
+variant,regime,shots,dataset,training_dataset,metric,completed_seeds,valid_seeds,expected_seeds,valid_categories_per_seed,mean_percent,sample_std_percent,paired_seeds,paired_delta_pp,seeds_improved
+baseline,zero_shot,0,VisA,VisA,I-AUROC,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",88.40666666666667,0.33861236441295545,3,0.0,0
+baseline,zero_shot,0,VisA,VisA,I-AUPR,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",90.75202191482605,0.23177018263235583,3,0.0,0
+baseline,zero_shot,0,VisA,VisA,I-F1max,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",81.86607778798562,0.7361095838765465,3,0.0,0
+baseline,zero_shot,0,VisA,VisA,P-AUROC,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",93.34271397058087,0.19649860800841673,3,0.0,0
+baseline,zero_shot,0,VisA,VisA,P-AUPR,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",19.392828105693802,0.37070534308082215,3,0.0,0
+baseline,zero_shot,0,VisA,VisA,P-F1max,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",25.322401401395297,0.3964244033794366,3,0.0,0
+baseline,zero_shot,0,VisA,VisA,P-AUPRO,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",83.58665970124567,0.09805235438288794,3,0.0,0
+raw_image_peak,zero_shot,0,VisA,VisA,I-AUROC,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",87.87166666666667,0.5186842327788023,3,-0.5349999999999929,0
+raw_image_peak,zero_shot,0,VisA,VisA,I-AUPR,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",90.15685786709082,0.3840321251638911,3,-0.5951640477352157,0
+raw_image_peak,zero_shot,0,VisA,VisA,I-F1max,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",81.27645727488495,1.1877204331936098,3,-0.5896205131006674,0
+raw_image_peak,zero_shot,0,VisA,VisA,P-AUROC,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",93.34271397058087,0.19649860800841673,3,0.0,0
+raw_image_peak,zero_shot,0,VisA,VisA,P-AUPR,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",19.392828105693802,0.37070534308082215,3,0.0,0
+raw_image_peak,zero_shot,0,VisA,VisA,P-F1max,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",25.322401401395297,0.3964244033794366,3,0.0,0
+raw_image_peak,zero_shot,0,VisA,VisA,P-AUPRO,3,3,3,"{""10"": 2, ""20"": 2, ""30"": 2}",83.58665970124567,0.09805235438288794,3,0.0,0

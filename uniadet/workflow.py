@@ -16,6 +16,7 @@ class RunConfig:
     test: dict = field(default_factory=dict)
     runs_root: str = "runs"
     train_dataset: str | None = None
+    seed_output: str | None = None
 
     def __post_init__(self):
         self.train = copy.deepcopy(self.train)
@@ -27,7 +28,24 @@ def output_path(config, data, *, training=False, shots=0):
     for name in (config.model, dataset):
         if name in ("", ".", "..") or "/" in name or "\\" in name:
             raise ValueError("Model and dataset names must be simple directory names")
+    if config.seed_output is not None:
+        return Path(config.seed_output) / (f"train_{dataset}" if training else f"test_{dataset}")
     return Path(config.runs_root) / config.model / (f"train_{dataset}" if training else f"{dataset}_{shots}shot")
+
+
+def paper_auxiliary_groups(targets):
+    """Group targets by the paper's labeled auxiliary training dataset."""
+    if not targets:
+        raise ValueError("Paper protocol requires evaluation datasets")
+    groups, names = {}, set()
+    for target in targets:
+        path = Path(target)
+        if path.name in names:
+            raise ValueError(f"Duplicate evaluation dataset identifier: {path.name}")
+        names.add(path.name)
+        auxiliary = path.parent / ("MVTecAD" if path.name.lower() == "visa" else "VisA")
+        groups.setdefault(str(auxiliary), []).append(str(path))
+    return dict(sorted(groups.items()))
 
 
 def training_args(config):
@@ -36,6 +54,16 @@ def training_args(config):
     if unknown:
         raise ValueError(f"Unknown training settings: {sorted(unknown)}")
     vars(args).update(copy.deepcopy(config.train))
+    if args.data == "auto":
+        targets = config.test.get("data", [])
+        if not targets:
+            raise ValueError("Automatic auxiliary data selection requires evaluation datasets")
+        sources = set(paper_auxiliary_groups(targets))
+        if len(sources) != 1:
+            raise ValueError("Evaluation targets require different auxiliary datasets; use separate runs")
+        args.data = sources.pop()
+        if args.split != "test":
+            raise ValueError("Paper auxiliary training requires split='test'")
     args.data = args.data or "datasets/VisA"
     args.device = args.device or ("cuda" if cli.torch.cuda.is_available() else "cpu")
     args.image_size = args.image_size or (512 if args.backbone == "dinov3" else 518)
@@ -47,6 +75,18 @@ def training_args(config):
     if args.workers < 0:
         raise ValueError("workers must be nonnegative")
     return args
+
+
+def test_summary_path(config):
+    root = (Path(config.seed_output) if config.seed_output is not None
+            else Path(config.runs_root) / config.model)
+    name = config.test.get("summary_name", "test_summary.csv")
+    if Path(name).name != name or name in ("", ".", ".."):
+        raise ValueError("summary_name must be a simple filename")
+    return root / name
+
+
+test_summary_path.__test__ = False
 
 
 def test_checkpoints(config, args, start_epoch):
@@ -109,7 +149,7 @@ def test_checkpoints(config, args, start_epoch):
                     value = (average.get(task) or {}).get(metric)
                     row[column] = 100 * value if value is not None else ""
                 summary.append(row)
-    summary_path = Path(config.runs_root) / config.model / "test_summary.csv"
+    summary_path = test_summary_path(config)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = summary_path.with_suffix(".csv.tmp")
     with temporary.open("w", newline="") as stream:

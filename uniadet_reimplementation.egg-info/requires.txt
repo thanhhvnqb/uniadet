@@ -13,3 +13,4 @@ einops
 huggingface-hub
 safetensors
 timm>=1.0.16
+transformers<5,>=4.56.0
