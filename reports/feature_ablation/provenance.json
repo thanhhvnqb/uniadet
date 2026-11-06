@@ -1,0 +1,48 @@
+{
+  "as_of": "2026-11-06",
+  "operation": "offline_reporting_only",
+  "cross_dataset_evaluations_verified": 36,
+  "holdout_evaluations_verified": 6,
+  "summary_mean_sample_sd_paired_deltas": "verified against per-seed rows",
+  "context_archived_summary_rows": 28,
+  "context_missing_raw_paths": 84,
+  "context_validation": "archived summaries only; raw data unavailable here",
+  "inputs": [
+    {
+      "path": "runs/baseline/dinov3/0_shot/audit_20261106/family_results.csv",
+      "sha256": "c053b8aa1544cdd1fcbc3940f82e5614f6457141e0f17e1560a98203c6c3f0a4"
+    },
+    {
+      "path": "runs/baseline/dinov3/0_shot/audit_20261106/family_summary.csv",
+      "sha256": "b4db46237134e1213788564c6e1a843afc0076f8e1f1a883862ea2932c5d8f85"
+    },
+    {
+      "path": "runs/baseline/reproduction_review/source-score-20261106T043532Z/source-validation/family_results.csv",
+      "sha256": "0d6a9cbfedf73d1354fbb8413c9c33391a5744ac7ed506c7eac75c7185cdb0b3"
+    },
+    {
+      "path": "runs/baseline/reproduction_review/source-score-20261106T043532Z/source-validation/family_summary.csv",
+      "sha256": "8f3a31c4c04c5c0fc3e7e2d594bcbb15268b71a86c8e791f9735b6c61c1e8cf7"
+    },
+    {
+      "path": "reports/context/experimental_results.csv",
+      "sha256": "d7306d0fc294003aa0adfda411f18ce286e97e919df9317f3bbfb65dc9d85377"
+    },
+    {
+      "path": "runs/baseline/dinov3/0_shot/audit_20261106/summary.csv",
+      "sha256": "f27faaa02901cba87b7fadee37f4fcd8b97d5513d7be1f692df4ee99b2015fc4"
+    },
+    {
+      "path": "reports/experiment_comparison.csv",
+      "sha256": "07f77ad1241b3b60c45f9c69035f23247a3323a690dc8c06beecaed93ae6f31e"
+    },
+    {
+      "path": "reports/experiment_category_comparison.csv",
+      "sha256": "8525e15ba617728b2ffe4cfe9d05a27fc9805bafc403d79b09d58e34be6f90bc"
+    },
+    {
+      "path": "reports/paper/uniadet_2601.05552v1/reference.json",
+      "sha256": "5c6f15a9ea1e8a0606cffa2aa46a0228d18c2088e54659c62bf288dcf5870ad8"
+    }
+  ]
+}

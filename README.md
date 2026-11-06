@@ -10,10 +10,17 @@ For ordered, copy-and-run experiment commands in Vietnamese, use
 [RUN_EXPERIMENTS_VI.md](RUN_EXPERIMENTS_VI.md). Edit `config.py` to configure a run;
 `--dry-run` prints the effective plan without running a model.
 
-Run the selected configuration with `python train_test.py`: softmax before
-resize, Gaussian sigma 4, layer pooling, full VisA training and zero-shot MVTec
-at epoch 15. Outputs use `runs/uniadet-best-current/`. Saved checkpoint settings
+See the [training/testing code review and new experiment commands](reports/reproduction_code_review.md)
+for source-only score validation and three-seed baseline benchmarks.
+
+Run the selected configuration with `python train_test.py`: frozen DINOv3,
+softmax before resize, Gaussian sigma 4, layer pooling, labeled VisA test-split
+training and zero-shot Real-IAD evaluation at epoch 15. Outputs use
+`runs/<MODEL>/`, with `MODEL="uniadet-dinov3"` in the current configuration. Saved checkpoint settings
 remain authoritative during evaluation; old missing fields retain legacy defaults.
+
+Experimental descriptor code has been archived under `runs/maintenance/feature_cleanup/20261106/`.
+The active model uses the original task/layer decoupled head. Historical experiment results are preserved.
 
 ## Install
 

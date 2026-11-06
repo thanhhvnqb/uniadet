@@ -1,0 +1,14 @@
+id,status,issue,evidence,observation,causal_limit,next_action
+G01,observed_gap,DINOv3 image detection thấp hơn paper,gap_analysis.md,MVTecAD −1.53 pp; VisA −2.99 pp I-AUROC,Chưa xác định nguyên nhân duy nhất,"Khóa baseline, controlled source validation"
+G02,unresolved_match,Temperature/initialization/Adam/loss details,gap_analysis.md,"Local choices explicit, exact paper choices chưa xác nhận",Có thể ảnh hưởng train; chưa định lượng contribution,"Một yếu tố mỗi experiment, retrain khi cần"
+G03,hypothesis_not_selected,Raw image peak như cách tăng detection,gap_analysis.md,Source I-AUROC −0.535 pp; 0/3 seeds improved,Không đạt predeclared selection; không promote,Retain baseline
+G04,unresolved_match,Final peak reduction và smoothing order,../feature_ablation/implementation.md,mean(max) khác max(mean); target diagnostic dataset dependent,Có thể thay image score; chưa biết paper rule exact,Source-only test với cùng head/map
+G05,confirmed_protocol_limitation,Historical target-selected defaults,gap_analysis.md,Softmax/sigma defaults dùng MVTec development measurements,Hạn chế độc lập; không chứng minh causal gap,Disclosure và target độc lập
+G06,partially_checked,Pretrained/encoder parity,gap_analysis.md,Mean token cosine ≥0.99999976 trên tested input,Không thấy discrepancy lớn ở mẫu; không exhaustive,Giữ weight identity và expand parity khi cần
+G07,repaired_operational,Broken pipe worker/launcher,implementation_audit.md,3 residual evaluation recovered; original errors preserved,Giải thích thiếu job; không giải thích baseline accuracy,Giữ disk logging và child status
+G08,repaired_safeguard,Train output overwrite,implementation_audit.md,Reject nonempty output regression,Chưa có bằng chứng baseline corruption,Fresh output mọi training run
+G09,repaired_resource,GPU resident few-shot bank,implementation_audit.md,CPU-backed exact NN; CUDA test diff=0,Không liên quan zero-shot gap; speed chưa đo,Measure bank RAM/latency khi few-shot
+G10,missing_coverage,Real-IAD baseline/spatial,README.md,Không completed Real-IAD ba seed; spatial 0/3 mỗi target,Không kết luận protocol default hay toàn family complete,Chạy riêng khi được yêu cầu
+G11,confirmed_confound,Feature capacity chưa có matched control,../feature_ablation/implementation.md,"Heads 26k–190k vs baseline 20,480",Không quy small gains riêng cho descriptor,Matched capacity control
+G12,archived_only,Context raw không có trong workspace,../feature_ablation/provenance.json,28 summary rows; 84 raw paths missing,Không tái verify legacy completion/selection,Khôi phục raw nếu cần reproduction
+G13,checked,Metric/aggregation definitions,implementation_audit.md,42 complete current evaluations raw-to-CSV bảy metric verified,Không thấy aggregation mismatch trong phạm vi kiểm tra,Giữ PR area/AUPRO/macro definitions

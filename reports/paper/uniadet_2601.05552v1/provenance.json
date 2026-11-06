@@ -1,0 +1,64 @@
+{
+  "paper_version": "2601.05552v1",
+  "source_url": "https://arxiv.org/html/2601.05552v1",
+  "html_sha256": "a06465dfe407107c6485cfc1862650cf59fea1e051c31d2523d169abbc97a69e",
+  "extracted_at": "2026-11-06T03:21:59.415458+00:00",
+  "dataset_rows": 96,
+  "category_rows": 876,
+  "tables": [
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34
+  ],
+  "main_tables": [
+    2,
+    3,
+    5,
+    10,
+    11
+  ],
+  "std_definition": "Reported \u00b1 values retained; do not assume local ddof=1 or known paper seeds.",
+  "policy": "Use detailed-table dataset rows for full-metric comparisons; retain main-table differences explicitly; never silently reconcile.",
+  "extraction": "scripts/cache_paper_results.py; local input only; no need to parse paper for ordinary reporting.",
+  "pdf_sha256": "e8e75985fab369df36d5ebfe8d93d5c3439844a56ddc1e8f24be4ff3632479f6",
+  "pdf_crosscheck": {
+    "matched_rows": 946,
+    "unmatched_rows": []
+  },
+  "cache_sha256": {
+    "discrepancies.csv": "9abaeb60cfca4a97d4e74724c15514890f653e0ad05f060fb8459d126434b380",
+    "dataset_results.csv": "bd2e45f5c79d8f87b53a72240843b03fbd5e024a58a42b295ef43612223490c7",
+    "category_results.csv": "b1c713b69fe5b5a9ccf16934a05af3b10e3ac3cd3f8d074c9173e217df73bd6b",
+    "main_table_results.csv": "79ba3522f0275d2988c64610ba4aea9b6698b415b98285f298de1393aa2eb7ad",
+    "macro_discrepancies.csv": "d6cd66d46952731a6760280191ee1be2eb3081f3624bd41fc3da45b308f73d64"
+  },
+  "extractor_sha256": "34460be4a1497fb0006c40c718f268dfc9c607b5091dcfe1e5b5eb106105032a",
+  "validation": {
+    "focused_tests": 5,
+    "full_suite_passed": 194,
+    "comparison_dataset_groups": 2,
+    "comparison_category_groups": 27,
+    "links": "verified",
+    "csv_hashes": "verified"
+  }
+}

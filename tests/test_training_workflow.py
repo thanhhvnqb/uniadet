@@ -193,3 +193,32 @@ def test_partial_training_config_uses_cli_defaults():
     assert args.data == "datasets/VisA"
     assert args.log_interval == 50
     assert args.gaussian_sigma == 4.
+
+
+def test_source_summaries_and_checkpoint_routing_share_one_seed(tmp_path):
+    from uniadet import workflow, cli
+    root = tmp_path / 'baseline/dinov3/0_shot/seed_10'
+    groups = workflow.paper_auxiliary_groups(['datasets/VisA', 'datasets/MVTecAD', 'datasets/Real-IAD'])
+    routed = []
+    def evaluate(current):
+        routed.append((Path(current.data).name, Path(current.checkpoint).parent.name))
+        output = Path(current.output)
+        output.mkdir(parents=True, exist_ok=True)
+        (output / 'metrics.json').write_text(json.dumps({'average': {'image': {'auroc': .5}, 'pixel': None}}))
+    for auxiliary, targets in groups.items():
+        name = Path(auxiliary).name
+        config = workflow.RunConfig(model='test-routing', seed_output=str(root),
+            train=dict(data=auxiliary, backbone='dinov3', device='cpu', workers=0),
+            test=dict(data=targets, shots=[0], epochs=[15], checkpoint=None,
+                      summary_name=f'test_summary_from_{name}.csv'))
+        args = workflow.training_args(config)
+        Path(args.output).mkdir(parents=True)
+        (Path(args.output) / 'epoch_15.pt').touch()
+        with patch.object(cli, 'evaluate', side_effect=evaluate):
+            workflow.test_checkpoints(config, args, 1)
+    assert set(routed) == {('VisA', 'train_MVTecAD'), ('MVTecAD', 'train_VisA'), ('Real-IAD', 'train_VisA')}
+    for name, count in [('VisA', 2), ('MVTecAD', 1)]:
+        with (root / f'test_summary_from_{name}.csv').open() as stream:
+            rows = list(csv.DictReader(stream))
+        assert len(rows) == count
+        assert all(f'train_{name}' in row['Checkpoint'] for row in rows)

@@ -19,4 +19,5 @@ Requires-Dist: einops
 Requires-Dist: huggingface-hub
 Requires-Dist: safetensors
 Requires-Dist: timm>=1.0.16
+Requires-Dist: transformers<5,>=4.56.0
 Dynamic: license-file

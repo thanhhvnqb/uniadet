@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from uniadet.cli import build, metrics, parser, restore_evaluation_settings, seed_all
+from uniadet.cli import build, metrics, parser, restore_evaluation_settings, seed_all, verify_backbone_provenance
 from uniadet.data import AnomalyDataset
 from uniadet.model import smooth_maps
 
@@ -30,6 +30,7 @@ def main(argv=None):
     if args.batch_size < 1:
         raise ValueError("batch-size must be positive")
     model = build(args).eval()
+    provenance = verify_backbone_provenance(model, args, checkpoint)
     model.head.load_state_dict(checkpoint["head"])
     dataset = AnomalyDataset(args.data, image_size=args.image_size, backbone=args.backbone,
                              categories=args.categories, exclude_categories=args.exclude_categories,
@@ -44,11 +45,17 @@ def main(argv=None):
             cls = torch.stack([v.softmax(-1)[:, 1] for v in global_logits])
             maps = torch.stack([v.softmax(1)[:, 1] for v in local_logits])
             global_score = cls.mean(0)
-            mean_map_peak = smooth_maps(maps.mean(0), args.gaussian_sigma).flatten(1).amax(1)
-            layer_peak = smooth_maps(maps, args.gaussian_sigma).flatten(2).amax(2).mean(0)
+            score_sigma = args.gaussian_sigma if args.image_score_gaussian_sigma is None else args.image_score_gaussian_sigma
+            mean_map_peak = smooth_maps(maps.mean(0), score_sigma).flatten(1).amax(1)
+            layer_peak = smooth_maps(maps, score_sigma).flatten(2).amax(2).mean(0)
             scores = {"global_only": global_score, "map_only": mean_map_peak,
                       "legacy_map_fusion": (1-args.lambda_p)*global_score + args.lambda_p*mean_map_peak,
                       "layer_fusion": (1-args.lambda_p)*global_score + args.lambda_p*layer_peak}
+            # Fixed diagnostics only: do not choose postprocessing on target labels.
+            raw_layer_peak = maps.flatten(2).amax(2).mean(0)
+            scores["unsmoothed_layer_fusion"] = ((1-args.lambda_p)*global_score
+                                                + args.lambda_p*raw_layer_peak)
+            scores["unsmoothed_map_only"] = maps.mean(0).flatten(1).amax(1)
             scores.update({f"global_layer_{layer}": score for layer, score in zip(args.layers, cls)})
             for name, score in scores.items():
                 values.setdefault(name, []).extend(score.cpu().tolist())
@@ -64,7 +71,8 @@ def main(argv=None):
     output.mkdir(parents=True, exist_ok=True)
     (output/"score_audit.json").write_text(json.dumps(
         {"config": vars(args), "training": checkpoint["config"],
-         "checkpoint_epoch": checkpoint.get("epoch"), "categories": report, "average": average}, indent=2))
+         "checkpoint_epoch": checkpoint.get("epoch"), "categories": report, "average": average,
+         **provenance}, indent=2))
     print("Average", json.dumps(average), flush=True)
 
 

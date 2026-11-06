@@ -1,7 +1,6 @@
 """Run the editable configuration in config.py: python train_test.py --dry-run."""
 import argparse
 import json
-from pathlib import Path
 
 from config import MODE, MODEL, RUNS_ROOT, TRAIN_DATASET, TRAIN_CONFIG, TEST_CONFIG
 from uniadet import cli, workflow
@@ -49,7 +48,7 @@ def main(argv=None):
     if options.dry_run:
         print(json.dumps({"model": MODEL, "mode": mode, "training": vars(args),
                           "test_overrides": config.test, "test_start_epoch": start_epoch,
-                          "summary": str(Path(RUNS_ROOT) / MODEL / "test_summary.csv")}, indent=2))
+                          "summary": str(workflow.test_summary_path(config))}, indent=2))
         return
     if mode in ("train", "train_test"):
         cli.seed_all(args.seed)

@@ -49,7 +49,7 @@ class DecoupledHead(nn.Module):
 
 
 class NormalMemory:
-    """Separate class/view banks; exact cosine NN with bounded working memory."""
+    """CPU-backed class/view banks; exact cosine NN with bounded GPU memory."""
     def __init__(self, chunk_size=1024):
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
@@ -57,7 +57,7 @@ class NormalMemory:
         self.banks = {}
 
     def add(self, key, features):
-        values = [F.normalize(p.detach().float().flatten(0, 1), dim=-1) for _, p, _ in features]
+        values = [F.normalize(p.detach().float().flatten(0, 1), dim=-1).cpu() for _, p, _ in features]
         if key in self.banks:
             values = [torch.cat((a, b)) for a, b in zip(self.banks[key], values)]
         self.banks[key] = values
@@ -103,7 +103,8 @@ class UniADet(nn.Module):
         return self.head(features, images.shape[-2:])
 
     @torch.no_grad()
-    def predict(self, images, memory=None, key=None, zero_score_pooling="layer", gaussian_sigma=0.):
+    def predict(self, images, memory=None, key=None, zero_score_pooling="layer", gaussian_sigma=0.,
+                image_score_gaussian_sigma=None):
         if zero_score_pooling not in ("layer", "map"):
             raise ValueError("zero_score_pooling must be layer or map")
         features = self.encoder(images)
@@ -114,14 +115,17 @@ class UniADet(nn.Module):
         if memory is not None:
             reference_map = memory.predict(key, features, images.shape[-2:])
             anomaly_map = (1-self.lambda_f) * anomaly_map + self.lambda_f * reference_map
-        anomaly_map = smooth_maps(anomaly_map, gaussian_sigma)
+        raw_map = anomaly_map
+        anomaly_map = smooth_maps(raw_map, gaussian_sigma)
+        score_sigma = gaussian_sigma if image_score_gaussian_sigma is None else image_score_gaussian_sigma
         # Layer-wise interpretation of Sec. 3.5; the paper leaves the final
         # layer reduction unspecified, so both reduction orders are supported.
         # max(mean(maps)) != mean(max(maps)) when layers localize differently.
         if memory is None and zero_score_pooling == "layer":
-            layer_maps = smooth_maps(layer_maps, gaussian_sigma)
+            layer_maps = smooth_maps(layer_maps, score_sigma)
             peak = layer_maps.flatten(2).amax(2).mean(0)
         else:
-            peak = anomaly_map.flatten(1).amax(1)
+            score_map = anomaly_map if score_sigma == gaussian_sigma else smooth_maps(raw_map, score_sigma)
+            peak = score_map.flatten(1).amax(1)
         score = (1-self.lambda_p) * score + self.lambda_p * peak
         return score, anomaly_map

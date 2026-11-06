@@ -1,7 +1,8 @@
 """Resolve and validate settings, including historical checkpoint defaults."""
 import math
 
-PREDICTION_DEFAULTS = {"lambda_f": 0.5, "lambda_p": 0.5, "zero_score_pooling": "layer", "gaussian_sigma": 4.}
+PREDICTION_DEFAULTS = {"lambda_f": 0.5, "lambda_p": 0.5, "zero_score_pooling": "layer", "gaussian_sigma": 4.,
+                       "image_score_gaussian_sigma": None}
 CLIP_FEATURE_DEFAULTS = {"clip_global_norm": True, "clip_pos_interpolation": "bicubic"}
 TRAINED_SETTING_DEFAULTS = {**CLIP_FEATURE_DEFAULTS, "softmax_before_resize": True, "mask_interpolation": "nearest"}
 # Missing checkpoint fields describe historical behavior, not new-run defaults.
@@ -24,6 +25,8 @@ def restore_evaluation_settings(args, checkpoint):
     None marks an absent CLI override, including for BooleanOptionalAction.
     """
     config = checkpoint["config"]
+    if config.get("patch_features", "none") != "none":
+        raise ValueError("Descriptor checkpoints require the archived feature-ablation implementation; use a baseline checkpoint")
     args.backbone = config.get("backbone") or "clip"
     defaults = {"layers": [12, 15, 18, 21, 24], "temperature": 0.07,
                 "image_size": 512 if args.backbone == "dinov3" else 518}
@@ -47,6 +50,9 @@ def restore_evaluation_settings(args, checkpoint):
 
 
 def validate_settings(args):
+    score_sigma = getattr(args, "image_score_gaussian_sigma", None)
+    if score_sigma is not None and (not math.isfinite(score_sigma) or score_sigma < 0):
+        raise ValueError("image_score_gaussian_sigma must be None or nonnegative and finite")
     for name in ("lambda_f", "lambda_p", "caa_probability", "mosaic_probability"):
         value = getattr(args, name, 0.5)
         if not math.isfinite(value) or not 0 <= value <= 1:

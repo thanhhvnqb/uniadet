@@ -3,6 +3,7 @@ import csv
 import json
 import random
 import time
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -50,13 +51,15 @@ def parser():
     p.add_argument("--clip-pos-interpolation", choices=("bilinear", "bicubic"), default=None,
                    help="CLIP positional interpolation (train default: bicubic); requires retraining")
     p.add_argument("--head-init-std", type=float,
-                   help="Gaussian head initialization std; default is feature_dim**-0.5")
+                   help="Gaussian head initialization std; default is backbone_dim**-0.5")
     p.add_argument("--softmax-before-resize", action=argparse.BooleanOptionalAction, default=None,
                    help="Resize patch probabilities before interpolation (new training default: enabled)")
     p.add_argument("--mask-interpolation", choices=("nearest", "bilinear"), default=None,
                    help="Mask resizing: nearest (default) or bilinear followed by threshold 0.5")
     p.add_argument("--gaussian-sigma", type=float, default=None,
                    help="Spatial smoothing: new training default 4; evaluation restores checkpoint (legacy fallback 0)")
+    p.add_argument("--image-score-gaussian-sigma", type=float, default=None,
+                   help="Image-score peak smoothing only; None restores checkpoint, then inherits map sigma")
     p.add_argument("--epochs", type=int, default=15)
     p.add_argument("--lr", type=float, default=0.001)
     p.add_argument("--betas", type=float, nargs=2, default=[0.5, 0.999])
@@ -109,6 +112,29 @@ def build(args):
                    getattr(args, "head_init_std", None), args.softmax_before_resize).to(args.device)
 
 
+def backbone_provenance(model, args):
+    """Identify pretrained sources without changing historical checkpoint settings."""
+    commit = getattr(getattr(getattr(model.encoder, "model", None), "config", None), "_commit_hash", None)
+    digest = None
+    if args.weights and Path(args.weights).is_file():
+        hashed = hashlib.sha256()
+        with Path(args.weights).open("rb") as stream:
+            for block in iter(lambda: stream.read(8*1024*1024), b""):
+                hashed.update(block)
+        digest = hashed.hexdigest()
+    return dict(backbone=args.backbone, hf_commit=commit, weights_sha256=digest)
+
+
+def verify_backbone_provenance(model, args, checkpoint):
+    actual = backbone_provenance(model, args)
+    expected = checkpoint.get("backbone_provenance", {})
+    for name in ("hf_commit", "weights_sha256"):
+        if expected.get(name) is not None and actual.get(name) != expected[name]:
+            raise ValueError(f"Frozen backbone {name} differs from the checkpoint; restore the original pretrained source")
+    return dict(backbone_provenance=actual, checkpoint_backbone_provenance=expected,
+                backbone_source_verified=any(expected.get(k) is not None for k in ("hf_commit", "weights_sha256")))
+
+
 def train(args):
     resolve_training_settings(args)
     print(f"Training device: {args.device} (PyTorch {torch.__version__}, CUDA build {torch.version.cuda})", flush=True)
@@ -117,9 +143,12 @@ def train(args):
     print(f"Loading {args.backbone} backbone...", flush=True)
     args.image_size = args.image_size or (512 if args.backbone == "dinov3" else 518)
     output = Path(args.output)
+    if output.exists() and any(output.iterdir()):
+        raise ValueError(f"Training output is not empty: {output}; use a new output directory")
     output.mkdir(parents=True, exist_ok=True)
     (output / "training_config.json").write_text(json.dumps(vars(args), indent=2))
     model = build(args).train()
+    provenance = backbone_provenance(model, args)
     print(f"Loading training data from {args.data} (split={args.split})...", flush=True)
     dataset = AnomalyDataset(args.data, args.split, args.image_size, args.backbone, caa=not args.no_caa, training=True,
                              caa_probability=getattr(args, "caa_probability", 0.5),
@@ -186,7 +215,8 @@ def train(args):
         log_row(dict(kind="epoch", epoch=epoch, step=len(loader), samples=seen, **averages,
                      lr=optimizer.param_groups[0]["lr"], seconds=time.monotonic()-started))
         print(f"epoch {epoch}/{args.epochs} " + " ".join(f"{k}={v:.6f}" for k, v in averages.items()), flush=True)
-        torch.save({"head": model.head.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch, "config": vars(args)}, Path(args.output)/f"epoch_{epoch}.pt")
+        torch.save({"head": model.head.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch,
+                    "config": vars(args), "backbone_provenance": provenance}, Path(args.output)/f"epoch_{epoch}.pt")
 
 
 
@@ -196,14 +226,22 @@ def evaluate(args):
         raise ValueError("--checkpoint is required for evaluation")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     config = checkpoint["config"]
+    explicit_overrides = {name: getattr(args, name, None) for name in
+                          (*PREDICTION_DEFAULTS, "weights", "dino_repo", "categories", "exclude_categories")
+                          if getattr(args, name, None) is not None}
     restore_evaluation_settings(args, checkpoint)
     # Preserve the effective settings, including the encoder source and pooling,
     # so comparisons cannot silently mix different evaluation configurations.
     Path(args.output).mkdir(parents=True, exist_ok=True)
     (Path(args.output)/"evaluation_config.json").write_text(json.dumps(
-        {"evaluation": vars(args), "training": config,
+        {"evaluation": vars(args), "training": config, "explicit_overrides": explicit_overrides,
          "checkpoint_epoch": checkpoint.get("epoch")}, indent=2))
     model = build(args).eval()
+    provenance = verify_backbone_provenance(model, args, checkpoint)
+    saved_evaluation = Path(args.output)/"evaluation_config.json"
+    saved = json.loads(saved_evaluation.read_text())
+    saved.update(provenance)
+    saved_evaluation.write_text(json.dumps(saved, indent=2))
     model.head.load_state_dict(checkpoint["head"])
     dataset = AnomalyDataset(args.data, "test", args.image_size, args.backbone,
                              categories=getattr(args, "categories", None),
@@ -242,11 +280,12 @@ def evaluate(args):
                             pin_memory=use_cuda)
         # Restore dataset order when batches are grouped by reference view.
         category_predictions = {}
-        for indices, batch in zip(batches, loader):
+        for batch_number, (indices, batch) in enumerate(zip(batches, loader), 1):
             key = (category, batch["view"][0])
             score, amap = model.predict(
                 batch["image"].to(args.device, non_blocking=use_cuda), memory, key,
-                zero_score_pooling=args.zero_score_pooling, gaussian_sigma=args.gaussian_sigma)
+                zero_score_pooling=args.zero_score_pooling, gaussian_sigma=args.gaussian_sigma,
+                image_score_gaussian_sigma=args.image_score_gaussian_sigma)
             batch_scores = score.cpu().tolist()
             batch_labels = batch["label"].tolist()
             valid = batch["has_mask"].bool()
@@ -257,9 +296,13 @@ def evaluate(args):
             scores.extend(batch_scores)
             for index, path, value in zip(indices, batch["path"], batch_scores):
                 category_predictions[index] = {"path": path, "category": category, "score": value}
+            if batch_number == 1 or batch_number % getattr(args, "log_interval", 50) == 0 or batch_number == len(batches):
+                print(f"Inference {category}: batch {batch_number}/{len(batches)}, "
+                      f"images {len(scores)}/{len(rows)}, elapsed={time.monotonic()-started:.1f}s", flush=True)
         predictions.extend(category_predictions[index] for index in range(len(rows)))
         inference_seconds = time.monotonic() - started
         metric_started = time.monotonic()
+        print(f"Computing metrics {category}: {len(masks)} masks (CPU)...", flush=True)
         pixel = None
         if masks:
             pixel = pixel_metrics(masks, maps)
